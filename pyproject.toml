@@ -12,6 +12,7 @@ dependencies = [
     "langchain-chroma>=1.1.0",
     "langchain-core>=1.2.17",
     "langchain-ollama>=1.0.1",
+    "langchain-openai>=1.1.10",
     "langgraph>=1.0.10",
     "uvicorn>=0.41.0",
 ]

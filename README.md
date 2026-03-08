@@ -1,6 +1,6 @@
 # LLM Semester Project
 
-Local RAG chatbot for banking Q&A data using LangGraph, FastAPI, Ollama, and Chroma.
+Local RAG chatbot for banking Q&A data using LangGraph, FastAPI, OpenRouter or Ollama for generation, and Chroma.
 
 ## Current Scope
 
@@ -15,24 +15,32 @@ Local RAG chatbot for banking Q&A data using LangGraph, FastAPI, Ollama, and Chr
 - Jinja2 for the minimal chat UI
 - LangGraph for orchestration and short-term memory
 - LangChain Core for messages and trimming utilities
-- `langchain-ollama` for `ChatOllama` and `OllamaEmbeddings`
+- `langchain-openai` for `ChatOpenAI` against OpenRouter's OpenAI-compatible endpoint
+- `langchain-ollama` for local `OllamaEmbeddings` and later local `ChatOllama` usage
 - `langchain-chroma` + `chromadb` for persistent local vector storage
 
 ## Why These Packages
 
-Current LangChain docs recommend standalone provider packages for integrations. That means this project uses `langchain-ollama` and `langchain-chroma` instead of the older `langchain-community` integration path for Ollama and Chroma.
+Current LangChain docs recommend standalone provider packages for integrations. That means this project uses `langchain-openai`, `langchain-ollama`, and `langchain-chroma` instead of the older `langchain-community` integration path.
 
 ## Local Prerequisites
 
 1. Install Python 3.11 or newer.
 2. Install `uv`.
 3. Install Ollama and make sure the Ollama service is running locally.
-4. Pull the models required by this project:
+4. Pull the local embedding model required by this project:
 
 ```powershell
-ollama pull qwen2.5:3b
 ollama pull nomic-embed-text
 ```
+
+5. For generation during development, set an OpenRouter API key:
+
+```powershell
+$env:OPENROUTER_API_KEY = "your-openrouter-key"
+```
+
+When your local chat model is ready, you can switch generation back to Ollama by setting `CHAT_PROVIDER=ollama` and ensuring the local chat model is available.
 
 ## Install Dependencies
 
@@ -48,7 +56,9 @@ If you need to add or refresh packages later, `pyproject.toml` is the source of 
 
 The application code added in later tasks should keep configuration minimal and local-first. The intended defaults are:
 
-- Chat model: `qwen2.5:3b`
+- Chat provider default: `openrouter`
+- OpenRouter chat model default: `qwen/qwen-2.5-7b-instruct`
+- Ollama chat model default: `qwen2.5:3b`
 - Embedding model: `nomic-embed-text`
 - Chroma persist directory: `./chroma_db`
 - Chroma collection name: `banking_qa`
@@ -70,6 +80,33 @@ uv run python ingest.py
 uv run uvicorn app:app --reload
 ```
 
+After starting Uvicorn, open `http://127.0.0.1:8000/` in the browser.
+
+## Architecture Summary
+
+- `ingest.py` loads `sheets_qa/*.json`, validates each Q&A record, and refreshes the local `banking_qa` Chroma collection.
+- `app.py` builds a three-node LangGraph flow: `retrieve -> trim -> generate`.
+- Retrieval stays local through Chroma plus Ollama embeddings.
+- Generation currently defaults to OpenRouter through `ChatOpenAI` until the local chat model is ready.
+- Conversation history is preserved in memory with a fixed thread ID through LangGraph's in-memory checkpointer.
+
+## Basic Local Run
+
+1. Install dependencies with `uv sync`.
+2. Ensure Ollama is running and `nomic-embed-text` is available.
+3. Set `OPENROUTER_API_KEY` for the current shell if using the default chat provider.
+4. Run `uv run python ingest.py`.
+5. Run `uv run uvicorn app:app --reload`.
+6. Open `http://127.0.0.1:8000/` and send a banking question.
+
+## Troubleshooting
+
+- If `/chat` returns a `503`, set `OPENROUTER_API_KEY` or switch to `CHAT_PROVIDER=ollama` after the local chat model is available.
+- If the app fails to retrieve context, rerun `uv run python ingest.py` and confirm `chroma_db` exists.
+- If embeddings fail, verify that Ollama is running and `ollama list` shows `nomic-embed-text`.
+- If you want to move back to local generation later, set `CHAT_PROVIDER=ollama` and ensure `OLLAMA_CHAT_MODEL` points to an installed local model.
+- If retrieval finds no useful documents, the app returns a safe fallback instead of fabricating an answer.
+
 ## Data Source
 
 The chatbot should use the JSON files under `sheets_qa/` as the retrieval corpus. Each record already contains:
@@ -89,12 +126,20 @@ The ingestion step should combine question and answer into embeddable text and p
 
 Optional environment variables for ingestion and later runtime code:
 
+- `CHAT_PROVIDER` default: `openrouter`
+- `CHAT_MODEL` default: `qwen/qwen-2.5-7b-instruct`
+- `OPENROUTER_API_KEY` required for OpenRouter generation
+- `OPENROUTER_BASE_URL` default: `https://openrouter.ai/api/v1`
+- `OLLAMA_CHAT_MODEL` default: `qwen2.5:3b`
 - `OLLAMA_EMBEDDING_MODEL` default: `nomic-embed-text`
 - `OLLAMA_BASE_URL` default: Ollama local default
 - `CHROMA_PERSIST_DIRECTORY` default: `chroma_db`
 - `CHROMA_COLLECTION_NAME` default: `banking_qa`
 - `QA_DIRECTORY` default: `sheets_qa`
 - `INGEST_BATCH_SIZE` default: `64`
+- `RETRIEVAL_TOP_K` default: `4`
+- `MAX_MESSAGE_TOKENS` default: `1200`
+- `LANGGRAPH_THREAD_ID` default: `global_session`
 
 ## Notes
 

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Banking RAG Chat</title>
+    <style>
+        :root {
+            --bg: #f4efe6;
+            --bg-accent: #dce7df;
+            --panel: rgba(255, 252, 247, 0.88);
+            --text: #1c2a22;
+            --muted: #5b6b62;
+            --brand: #0f766e;
+            --brand-deep: #134e4a;
+            --user: #efe2c7;
+            --assistant: #d9efe8;
+            --border: rgba(28, 42, 34, 0.12);
+            --shadow: 0 20px 60px rgba(25, 40, 33, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 30%),
+                radial-gradient(circle at right, rgba(194, 120, 60, 0.16), transparent 28%),
+                linear-gradient(160deg, var(--bg) 0%, #f7f3ec 45%, var(--bg-accent) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .shell {
+            width: min(980px, 100%);
+            min-height: min(760px, calc(100vh - 48px));
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 28px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            backdrop-filter: blur(16px);
+        }
+
+        .sidebar {
+            padding: 28px;
+            background: linear-gradient(180deg, rgba(19, 78, 74, 0.96), rgba(18, 58, 54, 0.92));
+            color: #eef7f4;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .eyebrow {
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        h1 {
+            margin: 0;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: clamp(2rem, 4vw, 3rem);
+            line-height: 0.95;
+            font-weight: 600;
+        }
+
+        .sidebar p,
+        .meta-item {
+            margin: 0;
+            color: rgba(238, 247, 244, 0.84);
+            line-height: 1.5;
+        }
+
+        .meta {
+            display: grid;
+            gap: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(238, 247, 244, 0.16);
+        }
+
+        .meta strong {
+            display: block;
+            color: #ffffff;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 100%;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .message {
+            max-width: 82%;
+            padding: 14px 16px;
+            border-radius: 18px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            border: 1px solid var(--border);
+            animation: rise 180ms ease-out;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background: var(--user);
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+            background: var(--assistant);
+        }
+
+        .composer {
+            padding: 20px 24px 24px;
+            border-top: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.65);
+        }
+
+        .status {
+            min-height: 22px;
+            color: var(--muted);
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        form {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 12px;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 62px;
+            max-height: 180px;
+            resize: vertical;
+            border-radius: 18px;
+            border: 1px solid rgba(28, 42, 34, 0.14);
+            padding: 16px 18px;
+            font: inherit;
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.92);
+        }
+
+        button {
+            border: 0;
+            border-radius: 18px;
+            padding: 0 22px;
+            min-width: 128px;
+            font: inherit;
+            font-weight: 700;
+            color: white;
+            background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+            cursor: pointer;
+            transition: transform 120ms ease, opacity 120ms ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            cursor: wait;
+            opacity: 0.7;
+            transform: none;
+        }
+
+        @keyframes rise {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 840px) {
+            .shell {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                gap: 14px;
+            }
+
+            .message {
+                max-width: 100%;
+            }
+
+            form {
+                grid-template-columns: 1fr;
+            }
+
+            button {
+                min-height: 52px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <aside class="sidebar">
+            <div class="eyebrow">Local Banking Assistant</div>
+            <h1>RAG chat for sheet-based banking Q&amp;A</h1>
+            <p>This interface queries the local Chroma collection built from the JSON banking corpus and routes generation through the configured chat provider.</p>
+
+            <section class="meta">
+                <div class="meta-item">
+                    <strong>Provider</strong>
+                    <span>{{ chat_provider }}</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Model</strong>
+                    <span>{{ chat_model }}</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Thread</strong>
+                    <span>{{ thread_id }}</span>
+                </div>
+            </section>
+        </aside>
+
+        <section class="panel">
+            <div id="messages" class="messages">
+                <div class="message assistant">Ask a banking question to begin. Responses are constrained to retrieved corpus context.</div>
+            </div>
+
+            <div class="composer">
+                <div id="status" class="status">Ready.</div>
+                <form id="chat-form">
+                    <textarea id="message-input" name="message" placeholder="Example: What are the free services offered with Current Deposit Account?" required></textarea>
+                    <button id="send-button" type="submit">Send</button>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const form = document.getElementById("chat-form");
+        const input = document.getElementById("message-input");
+        const button = document.getElementById("send-button");
+        const messages = document.getElementById("messages");
+        const status = document.getElementById("status");
+
+        function addMessage(role, text) {
+            const element = document.createElement("div");
+            element.className = `message ${role}`;
+            element.textContent = text;
+            messages.appendChild(element);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        async function sendMessage(message) {
+            status.textContent = "Retrieving context and generating response...";
+            button.disabled = true;
+
+            try {
+                const response = await fetch("/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message }),
+                });
+
+                const payload = await response.json();
+
+                if (!response.ok) {
+                    const detail = payload.detail || "Request failed.";
+                    throw new Error(detail);
+                }
+
+                addMessage("assistant", payload.reply);
+                status.textContent = `Ready. Retrieved ${payload.context_count} context item(s) via ${payload.provider}.`;
+            } catch (error) {
+                addMessage("assistant", `Error: ${error.message}`);
+                status.textContent = "Request failed.";
+            } finally {
+                button.disabled = false;
+                input.focus();
+            }
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const message = input.value.trim();
+            if (!message) {
+                return;
+            }
+
+            addMessage("user", message);
+            input.value = "";
+            await sendMessage(message);
+        });
+    </script>
+</body>
+</html>
