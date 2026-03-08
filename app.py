@@ -27,7 +27,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openrouter").lower()
 OPENROUTER_MODEL = os.getenv("CHAT_MODEL", "qwen/qwen-2.5-7b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct")
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
@@ -118,9 +118,9 @@ def get_vector_store() -> Chroma:
     )
 
 
-@lru_cache(maxsize=1)
-def get_chat_model() -> Any:
-    if CHAT_PROVIDER == "openrouter":
+@lru_cache(maxsize=2)
+def get_chat_model(provider: str) -> Any:
+    if provider == "openrouter":
         api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
@@ -144,7 +144,7 @@ def get_chat_model() -> Any:
             default_headers=headers or None,
         )
 
-    if CHAT_PROVIDER == "ollama":
+    if provider == "ollama":
         chat_ollama: Any = ChatOllama
         return chat_ollama(
             model=OLLAMA_CHAT_MODEL,
@@ -152,7 +152,7 @@ def get_chat_model() -> Any:
             temperature=0.0,
         )
 
-    raise ValueError(f"Unsupported CHAT_PROVIDER: {CHAT_PROVIDER}")
+    raise ValueError(f"Unsupported provider: {provider}")
 
 
 def format_context(documents: list[Any]) -> list[str]:
@@ -198,7 +198,10 @@ def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any
     if not context:
         return {"messages": [AIMessage(content=FALLBACK_ANSWER)]}
 
-    model = chat_model or get_chat_model()
+    if not chat_model:
+        raise ValueError("chat_model must be provided")
+    
+    model = chat_model
     context_block = "\n\n".join(context) if context else "No relevant context retrieved."
 
     response = model.invoke(
@@ -230,13 +233,13 @@ def build_graph(*, chat_model: Any = None, vector_store: Chroma | None = None):
     return builder.compile(checkpointer=MemorySaver())
 
 
-@lru_cache(maxsize=1)
-def get_graph():
-    return build_graph()
+@lru_cache(maxsize=2)
+def get_graph(provider: str):
+    return build_graph(chat_model=get_chat_model(provider))
 
 
-def invoke_graph(message: str, thread_id: str = THREAD_ID, graph: Any = None) -> dict[str, Any]:
-    compiled_graph = graph or get_graph()
+def invoke_graph(message: str, thread_id: str = THREAD_ID, provider: str = CHAT_PROVIDER, graph: Any = None) -> dict[str, Any]:
+    compiled_graph = graph or get_graph(provider)
     return compiled_graph.invoke(
         cast(State, {"messages": [HumanMessage(content=message)]}),
         config={"configurable": {"thread_id": thread_id}},
@@ -253,6 +256,7 @@ def get_db():
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     chat_id: str | None = None
+    provider: str = Field(default=CHAT_PROVIDER)
 
 class ChatResponse(BaseModel):
     reply: str
@@ -310,7 +314,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
     conn.commit()
 
     try:
-        state = invoke_graph(payload.message, thread_id=chat_id)
+        state = invoke_graph(payload.message, thread_id=chat_id, provider=payload.provider)
     except RuntimeError as exc:
         conn.close()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
