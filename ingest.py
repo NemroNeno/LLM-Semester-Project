@@ -4,9 +4,12 @@ from pathlib import Path
 
 import chromadb
 from chromadb.errors import NotFoundError
+from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
+
+load_dotenv()
 
 QA_DIRECTORY = Path(os.getenv("QA_DIRECTORY", "sheets_qa"))
 PERSIST_DIRECTORY = Path(os.getenv("CHROMA_PERSIST_DIRECTORY", "chroma_db"))

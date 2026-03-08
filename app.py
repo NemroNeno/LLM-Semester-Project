@@ -1,10 +1,12 @@
 import os
+import re
 from functools import lru_cache
 from typing import Any, Sequence, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
@@ -13,6 +15,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+
+load_dotenv()
 
 CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "chroma_db")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "banking_qa")
@@ -27,7 +31,14 @@ MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
 TEMPLATES = Jinja2Templates(directory="templates")
 
-SYSTEM_PROMPT_TEMPLATE = """You are a banking assistant for this local Q&A system.
+ASSISTANT_IDENTITY = (
+    "I am the NUST banking assistant. I answer questions using the NUST banking "
+    "Q&A data available in this system."
+)
+
+SYSTEM_PROMPT_TEMPLATE = """You are the NUST banking assistant.
+If the user asks who you are, what your name is, or what system they are using, identify yourself as the NUST banking assistant.
+Do not describe yourself as Qwen, OpenAI, Alibaba Cloud, OpenRouter, or a generic large language model.
 Answer only from the retrieved context below.
 If the context is missing, weak, or does not contain the answer, say: I do not have enough information in the provided banking data to answer that.
 Do not invent policies, fees, requirements, or product details.
@@ -71,6 +82,20 @@ def get_latest_user_text(messages: Sequence[BaseMessage]) -> str:
         if isinstance(message, HumanMessage):
             return message_to_text(message)
     return ""
+
+
+def is_identity_query(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    identity_patterns = (
+        r"\bwho are you\b",
+        r"\bwhat are you\b",
+        r"\bwhat is your name\b",
+        r"\byour name\b",
+        r"\bintroduce yourself\b",
+        r"\bwhat system is this\b",
+        r"\bwho made you\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in identity_patterns)
 
 
 @lru_cache(maxsize=1)
@@ -163,6 +188,10 @@ def trim_node(state: State) -> dict[str, list[BaseMessage]]:
 
 def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any]]:
     trimmed_messages = state.get("trimmed_messages") or state["messages"]
+    latest_user_text = get_latest_user_text(trimmed_messages)
+    if is_identity_query(latest_user_text):
+        return {"messages": [AIMessage(content=ASSISTANT_IDENTITY)]}
+
     context = state.get("context", [])
     if not context:
         return {"messages": [AIMessage(content=FALLBACK_ANSWER)]}
