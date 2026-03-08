@@ -1,9 +1,11 @@
 import os
 import re
+import sqlite3
+import uuid
 from functools import lru_cache
 from typing import Any, Sequence, cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Path
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -241,18 +243,46 @@ def invoke_graph(message: str, thread_id: str = THREAD_ID, graph: Any = None) ->
     )
 
 
+DB_PATH = "chat_history.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
-
+    chat_id: str | None = None
 
 class ChatResponse(BaseModel):
     reply: str
     context_count: int
     provider: str
-
+    chat_id: str
 
 app = FastAPI(title="LLM Semester Project")
 
+@app.on_event("startup")
+def startup():
+    conn = get_db()
+    conn.execute('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    conn.execute('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT, content TEXT, context_count INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    conn.commit()
+    conn.close()
+
+@app.get("/chats")
+def list_chats():
+    conn = get_db()
+    chats = conn.execute("SELECT id, title FROM chats ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [{"id": c["id"], "title": c["title"]} for c in chats]
+
+@app.get("/chats/{chat_id}/messages")
+def list_chat_messages(chat_id: str = Path(...)):
+    conn = get_db()
+    messages = conn.execute("SELECT role, content, context_count FROM messages WHERE chat_id = ? ORDER BY created_at ASC", (chat_id,)).fetchall()
+    conn.close()
+    return [{"role": m["role"], "content": m["content"], "context_count": m["context_count"]} for m in messages]
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
@@ -269,20 +299,40 @@ def index(request: Request):
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
+    chat_id = payload.chat_id or str(uuid.uuid4())
+    conn = get_db()
+    if not payload.chat_id:
+        title = payload.message[:30] + "..." if len(payload.message) > 30 else payload.message
+        conn.execute("INSERT INTO chats (id, title) VALUES (?, ?)", (chat_id, title))
+        conn.commit()
+    
+    conn.execute("INSERT INTO messages (chat_id, role, content, context_count) VALUES (?, ?, ?, ?)", (chat_id, "user", payload.message, 0))
+    conn.commit()
+
     try:
-        state = invoke_graph(payload.message)
+        state = invoke_graph(payload.message, thread_id=chat_id)
     except RuntimeError as exc:
+        conn.close()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        conn.close()
         raise HTTPException(status_code=500, detail=f"Chat invocation failed: {exc}") from exc
 
     messages = state.get("messages", [])
     if not messages:
+        conn.close()
         raise HTTPException(status_code=500, detail="Graph returned no messages.")
 
     reply = message_to_text(messages[-1])
+    context_count = len(state.get("context", []))
+    
+    conn.execute("INSERT INTO messages (chat_id, role, content, context_count) VALUES (?, ?, ?, ?)", (chat_id, "assistant", reply, context_count))
+    conn.commit()
+    conn.close()
+
     return ChatResponse(
         reply=reply,
-        context_count=len(state.get("context", [])),
+        context_count=context_count,
         provider=CHAT_PROVIDER,
+        chat_id=chat_id
     )
