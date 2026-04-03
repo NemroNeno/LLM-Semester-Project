@@ -33,6 +33,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 DEFAULT_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 DEFAULT_FETCH_K = int(os.getenv("RETRIEVAL_FETCH_K", "24"))
 DEFAULT_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
+DEFAULT_BM25_FETCH_K = int(os.getenv("RETRIEVAL_BM25_FETCH_K", "24"))
 OLLAMA_REQUEST_TIMEOUT = float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "5"))
 
 
@@ -51,10 +52,12 @@ class RerankConfig:
     lexical_weight: float
     rrf_weight: float
     metadata_weight: float
+    bm25_weight: float = 0.10
     rrf_scale: float = 30.0
     min_score: float = 0.22
     fetch_k: int = DEFAULT_FETCH_K
     mmr_fetch_k: int = DEFAULT_MMR_FETCH_K
+    bm25_fetch_k: int = DEFAULT_BM25_FETCH_K
 
 
 @dataclass(frozen=True)
@@ -271,6 +274,23 @@ def safe_lexical_candidates(query: str, corpus: list[Document], top_k: int) -> l
     return [document for score, document in scored[:top_k] if score > 0.0]
 
 
+def safe_bm25_candidates(query: str, corpus: list[Document], top_k: int) -> list[Any]:
+    if not corpus:
+        return []
+
+    try:
+        from langchain_community.retrievers import BM25Retriever
+    except ImportError:
+        return []
+
+    retriever = BM25Retriever.from_documents(corpus)
+    retriever.k = top_k
+    try:
+        return list(retriever.invoke(query))
+    except Exception:
+        return []
+
+
 def document_key(document: Any) -> str:
     metadata = getattr(document, "metadata", {}) or {}
     source_file = str(metadata.get("source_file", ""))
@@ -301,6 +321,7 @@ def rerank_documents(
                 "dense_rank": dense_rank,
                 "mmr_rank": None,
                 "lexical_rank": None,
+                "bm25_rank": None,
             },
         )
         if dense_score > bucket["dense_score"]:
@@ -318,6 +339,7 @@ def rerank_documents(
                 "dense_rank": 10_000,
                 "mmr_rank": mmr_rank,
                 "lexical_rank": None,
+                "bm25_rank": None,
             },
         )
         if bucket["mmr_rank"] is None or mmr_rank < bucket["mmr_rank"]:
@@ -334,16 +356,38 @@ def rerank_documents(
                 "dense_rank": 10_000,
                 "mmr_rank": None,
                 "lexical_rank": lexical_rank,
+                "bm25_rank": None,
             },
         )
         if bucket["lexical_rank"] is None or lexical_rank < bucket["lexical_rank"]:
             bucket["lexical_rank"] = lexical_rank
 
+    bm25_candidates = safe_bm25_candidates(query, corpus, top_k=max(config.bm25_fetch_k, config.fetch_k * 2))
+    for bm25_rank, document in enumerate(bm25_candidates, start=1):
+        key = document_key(document)
+        bucket = candidates.setdefault(
+            key,
+            {
+                "document": document,
+                "dense_score": 0.0,
+                "dense_rank": 10_000,
+                "mmr_rank": None,
+                "lexical_rank": None,
+                "bm25_rank": bm25_rank,
+            },
+        )
+        if bucket["bm25_rank"] is None or bm25_rank < bucket["bm25_rank"]:
+            bucket["bm25_rank"] = bm25_rank
+
     scored: list[tuple[float, Any]] = []
     rrf_k = 60.0
     total_weight = max(
         1e-9,
-        config.dense_weight + config.lexical_weight + config.rrf_weight + config.metadata_weight,
+        config.dense_weight
+        + config.lexical_weight
+        + config.rrf_weight
+        + config.metadata_weight
+        + config.bm25_weight,
     )
 
     for bucket in candidates.values():
@@ -357,13 +401,21 @@ def rerank_documents(
             rrf += 1.0 / (rrf_k + float(bucket["mmr_rank"]))
         if bucket["lexical_rank"] is not None:
             rrf += 1.0 / (rrf_k + float(bucket["lexical_rank"]))
+        if bucket["bm25_rank"] is not None:
+            rrf += 1.0 / (rrf_k + float(bucket["bm25_rank"]))
         rrf_score = min(1.0, rrf * config.rrf_scale)
+
+        bm25_rank = bucket.get("bm25_rank")
+        bm25_score = 0.0
+        if bm25_rank is not None:
+            bm25_score = 1.0 / (1.0 + float(bm25_rank))
 
         final_score = (
             (dense_score * config.dense_weight)
             + (lexical_score * config.lexical_weight)
             + (rrf_score * config.rrf_weight)
             + (meta_score * config.metadata_weight)
+            + (bm25_score * config.bm25_weight)
         ) / total_weight
         scored.append((final_score, document))
 
@@ -466,8 +518,10 @@ def evaluate_baselines(store: Chroma, examples: list[Example], top_k: int, corpu
             lexical_weight=0.0,
             rrf_weight=0.0,
             metadata_weight=0.0,
+            bm25_weight=0.0,
             fetch_k=top_k,
             mmr_fetch_k=top_k,
+            bm25_fetch_k=top_k,
         ),
         top_k=top_k,
         corpus=corpus,
@@ -481,6 +535,7 @@ def evaluate_baselines(store: Chroma, examples: list[Example], top_k: int, corpu
             lexical_weight=0.30,
             rrf_weight=0.15,
             metadata_weight=0.10,
+            bm25_weight=0.10,
         ),
         top_k=top_k,
         corpus=corpus,
@@ -494,8 +549,10 @@ def evaluate_baselines(store: Chroma, examples: list[Example], top_k: int, corpu
             lexical_weight=1.0,
             rrf_weight=0.0,
             metadata_weight=0.0,
+            bm25_weight=0.0,
             fetch_k=top_k,
             mmr_fetch_k=top_k,
+            bm25_fetch_k=top_k,
         ),
         top_k=top_k,
         corpus=corpus,

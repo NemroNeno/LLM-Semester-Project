@@ -36,6 +36,7 @@ RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 RETRIEVAL_FETCH_K = int(os.getenv("RETRIEVAL_FETCH_K", "24"))
 RETRIEVAL_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
 RETRIEVAL_LEXICAL_FETCH_K = int(os.getenv("RETRIEVAL_LEXICAL_FETCH_K", "24"))
+RETRIEVAL_BM25_FETCH_K = int(os.getenv("RETRIEVAL_BM25_FETCH_K", "24"))
 MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
 TEMPLATES = Jinja2Templates(directory="templates")
@@ -44,6 +45,7 @@ RERANK_DENSE_WEIGHT = float(os.getenv("RERANK_DENSE_WEIGHT", "0.45"))
 RERANK_LEXICAL_WEIGHT = float(os.getenv("RERANK_LEXICAL_WEIGHT", "0.30"))
 RERANK_RRF_WEIGHT = float(os.getenv("RERANK_RRF_WEIGHT", "0.15"))
 RERANK_METADATA_WEIGHT = float(os.getenv("RERANK_METADATA_WEIGHT", "0.10"))
+RERANK_BM25_WEIGHT = float(os.getenv("RERANK_BM25_WEIGHT", "0.10"))
 RERANK_RRF_SCALE = float(os.getenv("RERANK_RRF_SCALE", "30.0"))
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.22"))
 
@@ -232,6 +234,22 @@ def get_qa_corpus_documents() -> list[Document]:
     return documents
 
 
+@lru_cache(maxsize=1)
+def get_bm25_retriever() -> Any | None:
+    corpus = get_qa_corpus_documents()
+    if not corpus:
+        return None
+
+    try:
+        from langchain_community.retrievers import BM25Retriever
+    except ImportError:
+        return None
+
+    retriever = BM25Retriever.from_documents(corpus)
+    retriever.k = max(RETRIEVAL_BM25_FETCH_K, RETRIEVAL_TOP_K * 3)
+    return retriever
+
+
 def tokenize_for_rerank(text: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9%./-]+", text.lower()) if token}
 
@@ -331,6 +349,18 @@ def safe_lexical_candidates(query: str, top_k: int) -> list[Any]:
     return [document for score, document in scored[:top_k] if score > 0.0]
 
 
+def safe_bm25_candidates(query: str, top_k: int) -> list[Any]:
+    retriever = get_bm25_retriever()
+    if not retriever:
+        return []
+
+    retriever.k = top_k
+    try:
+        return list(retriever.invoke(query))
+    except Exception:
+        return []
+
+
 def document_key(document: Any) -> str:
     metadata = getattr(document, "metadata", {}) or {}
     source_file = str(metadata.get("source_file", ""))
@@ -355,6 +385,7 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
                 "dense_rank": dense_rank,
                 "mmr_rank": None,
                 "lexical_rank": None,
+                "bm25_rank": None,
             },
         )
         if dense_score > bucket["dense_score"]:
@@ -372,6 +403,7 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
                 "dense_rank": 10_000,
                 "mmr_rank": mmr_rank,
                 "lexical_rank": None,
+                "bm25_rank": None,
             },
         )
         if bucket["mmr_rank"] is None or mmr_rank < bucket["mmr_rank"]:
@@ -388,10 +420,28 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
                 "dense_rank": 10_000,
                 "mmr_rank": None,
                 "lexical_rank": lexical_rank,
+                "bm25_rank": None,
             },
         )
         if bucket["lexical_rank"] is None or lexical_rank < bucket["lexical_rank"]:
             bucket["lexical_rank"] = lexical_rank
+
+    bm25_candidates = safe_bm25_candidates(query, top_k=max(RETRIEVAL_BM25_FETCH_K, RETRIEVAL_TOP_K * 3))
+    for bm25_rank, document in enumerate(bm25_candidates, start=1):
+        key = document_key(document)
+        bucket = candidates.setdefault(
+            key,
+            {
+                "document": document,
+                "dense_score": 0.0,
+                "dense_rank": 10_000,
+                "mmr_rank": None,
+                "lexical_rank": None,
+                "bm25_rank": bm25_rank,
+            },
+        )
+        if bucket["bm25_rank"] is None or bm25_rank < bucket["bm25_rank"]:
+            bucket["bm25_rank"] = bm25_rank
 
     scored: list[tuple[float, Any]] = []
     rrf_k = 60.0
@@ -406,13 +456,21 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
             rrf += 1.0 / (rrf_k + float(bucket["mmr_rank"]))
         if bucket["lexical_rank"] is not None:
             rrf += 1.0 / (rrf_k + float(bucket["lexical_rank"]))
+        if bucket["bm25_rank"] is not None:
+            rrf += 1.0 / (rrf_k + float(bucket["bm25_rank"]))
         rrf_score = min(1.0, rrf * RERANK_RRF_SCALE)
+
+        bm25_rank = bucket.get("bm25_rank")
+        bm25_score = 0.0
+        if bm25_rank is not None:
+            bm25_score = 1.0 / (1.0 + float(bm25_rank))
 
         final_score = (
             (dense_score * RERANK_DENSE_WEIGHT)
             + (lexical_score * RERANK_LEXICAL_WEIGHT)
             + (rrf_score * RERANK_RRF_WEIGHT)
             + (meta_score * RERANK_METADATA_WEIGHT)
+            + (bm25_score * RERANK_BM25_WEIGHT)
         )
         scored.append((final_score, document))
 
