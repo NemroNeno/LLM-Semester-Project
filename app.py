@@ -4,6 +4,7 @@ import sqlite3
 import uuid
 import json
 from functools import lru_cache
+from pathlib import Path as FilePath
 from typing import Any, Sequence, cast
 
 from fastapi import FastAPI, HTTPException, Request, Path
@@ -11,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -25,6 +27,7 @@ CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "chroma_db")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "banking_qa")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
+QA_DIRECTORY = FilePath(os.getenv("QA_DIRECTORY", "sheets_qa"))
 CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openrouter").lower()
 OPENROUTER_MODEL = os.getenv("CHAT_MODEL", "qwen/qwen-2.5-7b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -32,6 +35,7 @@ OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct")
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 RETRIEVAL_FETCH_K = int(os.getenv("RETRIEVAL_FETCH_K", "24"))
 RETRIEVAL_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
+RETRIEVAL_LEXICAL_FETCH_K = int(os.getenv("RETRIEVAL_LEXICAL_FETCH_K", "24"))
 MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
 TEMPLATES = Jinja2Templates(directory="templates")
@@ -186,6 +190,48 @@ def format_context(documents: list[Any]) -> list[str]:
     return context_entries
 
 
+def build_page_content(question: str, answer: str) -> str:
+    answer_text = answer if answer else "No answer provided in source data."
+    return f"Question: {question}\nAnswer: {answer_text}"
+
+
+@lru_cache(maxsize=1)
+def get_qa_corpus_documents() -> list[Document]:
+    if not QA_DIRECTORY.exists():
+        return []
+
+    documents: list[Document] = []
+    for json_file in sorted(QA_DIRECTORY.glob("qa_*.json")):
+        rows = json.loads(json_file.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            continue
+
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+
+            question = str(row.get("question", "")).strip()
+            answer = str(row.get("answer", "")).strip()
+            sheet = str(row.get("sheet", "")).strip()
+            if not question or not sheet:
+                continue
+
+            documents.append(
+                Document(
+                    page_content=build_page_content(question, answer),
+                    metadata={
+                        "sheet": sheet,
+                        "source_file": json_file.name,
+                        "record_index": index,
+                        "question": question,
+                        "has_answer": bool(answer),
+                    },
+                )
+            )
+
+    return documents
+
+
 def tokenize_for_rerank(text: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9%./-]+", text.lower()) if token}
 
@@ -224,6 +270,26 @@ def metadata_match_score(query: str, document: Any) -> float:
     return min(1.0, hits / max(1, len(query_tokens)))
 
 
+def corpus_question_match_score(query: str, document: Any) -> float:
+    metadata = getattr(document, "metadata", {}) or {}
+    question_text = str(metadata.get("question", "")).lower()
+    if not question_text:
+        return 0.0
+
+    normalized_query = tokenize_for_rerank(query)
+    normalized_question = tokenize_for_rerank(question_text)
+    if not normalized_query or not normalized_question:
+        return 0.0
+
+    overlap = normalized_query & normalized_question
+    if not overlap:
+        return 0.0
+
+    coverage = len(overlap) / len(normalized_query)
+    exact_bonus = 1.0 if query.strip().lower() == question_text.strip() else 0.0
+    return min(1.0, (coverage * 0.7) + (exact_bonus * 0.3))
+
+
 def normalize_dense_score(score: float) -> float:
     if 0.0 <= score <= 1.0:
         return score
@@ -246,6 +312,23 @@ def safe_mmr_candidates(store: Chroma, query: str, top_k: int, fetch_k: int) -> 
         return store.max_marginal_relevance_search(query, k=top_k, fetch_k=fetch_k)
     except Exception:
         return []
+
+
+def safe_lexical_candidates(query: str, top_k: int) -> list[Any]:
+    corpus = get_qa_corpus_documents()
+    if not corpus:
+        return []
+
+    scored: list[tuple[float, Any]] = []
+    for document in corpus:
+        content_score = lexical_overlap_score(query, str(getattr(document, "page_content", "")))
+        question_score = corpus_question_match_score(query, document)
+        meta_score = metadata_match_score(query, document)
+        final_score = (content_score * 0.45) + (question_score * 0.45) + (meta_score * 0.10)
+        scored.append((final_score, document))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [document for score, document in scored[:top_k] if score > 0.0]
 
 
 def document_key(document: Any) -> str:
@@ -271,6 +354,7 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
                 "dense_score": 0.0,
                 "dense_rank": dense_rank,
                 "mmr_rank": None,
+                "lexical_rank": None,
             },
         )
         if dense_score > bucket["dense_score"]:
@@ -287,10 +371,27 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
                 "dense_score": 0.0,
                 "dense_rank": 10_000,
                 "mmr_rank": mmr_rank,
+                "lexical_rank": None,
             },
         )
         if bucket["mmr_rank"] is None or mmr_rank < bucket["mmr_rank"]:
             bucket["mmr_rank"] = mmr_rank
+
+    lexical_candidates = safe_lexical_candidates(query, top_k=max(RETRIEVAL_LEXICAL_FETCH_K, RETRIEVAL_TOP_K * 3))
+    for lexical_rank, document in enumerate(lexical_candidates, start=1):
+        key = document_key(document)
+        bucket = candidates.setdefault(
+            key,
+            {
+                "document": document,
+                "dense_score": 0.0,
+                "dense_rank": 10_000,
+                "mmr_rank": None,
+                "lexical_rank": lexical_rank,
+            },
+        )
+        if bucket["lexical_rank"] is None or lexical_rank < bucket["lexical_rank"]:
+            bucket["lexical_rank"] = lexical_rank
 
     scored: list[tuple[float, Any]] = []
     rrf_k = 60.0
@@ -303,6 +404,8 @@ def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_
         rrf = 1.0 / (rrf_k + float(bucket["dense_rank"]))
         if bucket["mmr_rank"] is not None:
             rrf += 1.0 / (rrf_k + float(bucket["mmr_rank"]))
+        if bucket["lexical_rank"] is not None:
+            rrf += 1.0 / (rrf_k + float(bucket["lexical_rank"]))
         rrf_score = min(1.0, rrf * RERANK_RRF_SCALE)
 
         final_score = (

@@ -893,6 +893,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langgraph" },
     { name = "python-dotenv" },
+    { name = "tqdm" },
     { name = "uvicorn" },
 ]
 
@@ -908,6 +909,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.1.10" },
     { name = "langgraph", specifier = ">=1.0.10" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "tqdm", specifier = ">=4.66.0" },
     { name = "uvicorn", specifier = ">=0.41.0" },
 ]
 
