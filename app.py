@@ -59,6 +59,10 @@ ASSISTANT_IDENTITY = (
 SYSTEM_PROMPT_TEMPLATE = """You are the NUST banking assistant.
 If the user asks who you are, what your name is, or what system they are using, identify yourself as the NUST banking assistant.
 Do not describe yourself as Qwen, OpenAI, Alibaba Cloud, OpenRouter, or a generic large language model.
+This assistant is strictly for NUST banking products and policies only.
+Never recommend, compare, or suggest products/accounts from other banks.
+If the user asks for alternatives, migration options, or comparisons, only suggest NUST account/product options found in retrieved context.
+If no relevant NUST options are present in retrieved context, return the fallback sentence exactly.
 Answer only from the retrieved context below.
 If the context is missing, weak, or does not contain the answer, say: I do not have enough information in the provided banking data to answer that.
 Do not invent policies, fees, requirements, or product details.
@@ -78,6 +82,30 @@ Retrieved context:
 """
 
 FALLBACK_ANSWER = "I do not have enough information in the provided banking data to answer that."
+
+DOMAIN_GUARDRAIL_ANSWER = (
+    "I can only assist with NUST banking products and data. "
+    "Please ask about NUST accounts, services, or policies."
+)
+
+EXTERNAL_BANK_PATTERNS = (
+    r"\bhbl\b",
+    r"\bhabib bank\b",
+    r"\bubl\b",
+    r"\bunited bank\b",
+    r"\bmeezan\b",
+    r"\bbank islami\b",
+    r"\bstandard chartered\b",
+    r"\bmcb\b",
+    r"\ballied bank\b",
+    r"\baskari\b",
+    r"\bbank alfalah\b",
+    r"\bfaysal bank\b",
+    r"\bnbp\b",
+    r"\bnational bank of pakistan\b",
+    r"\bnational savings\b",
+    r"\bnibs\b",
+)
 
 
 class State(MessagesState):
@@ -126,6 +154,11 @@ def is_identity_query(text: str) -> bool:
         r"\bwho made you\b",
     )
     return any(re.search(pattern, normalized) for pattern in identity_patterns)
+
+
+def references_external_bank(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return any(re.search(pattern, normalized) for pattern in EXTERNAL_BANK_PATTERNS)
 
 
 @lru_cache(maxsize=1)
@@ -613,6 +646,11 @@ def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any
             *trimmed_messages,
         ]
     )
+
+    response_text = message_to_text(response)
+    if references_external_bank(response_text):
+        return {"messages": [AIMessage(content=DOMAIN_GUARDRAIL_ANSWER)]}
+
     return {"messages": [response]}
 
 
