@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import uuid
+import json
 from functools import lru_cache
 from typing import Any, Sequence, cast
 
@@ -261,6 +262,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     context_count: int
+    rag_references: list[str] = Field(default_factory=list)
     provider: str
     chat_id: str
 
@@ -270,7 +272,10 @@ app = FastAPI(title="LLM Semester Project")
 def startup():
     conn = get_db()
     conn.execute('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    conn.execute('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT, content TEXT, context_count INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    conn.execute('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT, content TEXT, context_count INTEGER, rag_references TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "rag_references" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN rag_references TEXT")
     conn.commit()
     conn.close()
 
@@ -284,9 +289,32 @@ def list_chats():
 @app.get("/chats/{chat_id}/messages")
 def list_chat_messages(chat_id: str = Path(...)):
     conn = get_db()
-    messages = conn.execute("SELECT role, content, context_count FROM messages WHERE chat_id = ? ORDER BY created_at ASC", (chat_id,)).fetchall()
+    messages = conn.execute(
+        "SELECT role, content, context_count, rag_references FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
+        (chat_id,),
+    ).fetchall()
     conn.close()
-    return [{"role": m["role"], "content": m["content"], "context_count": m["context_count"]} for m in messages]
+
+    def parse_rag_references(raw: Any) -> list[str]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            return []
+        return []
+
+    return [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            "context_count": m["context_count"],
+            "rag_references": parse_rag_references(m["rag_references"]),
+        }
+        for m in messages
+    ]
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
@@ -310,7 +338,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
         conn.execute("INSERT INTO chats (id, title) VALUES (?, ?)", (chat_id, title))
         conn.commit()
     
-    conn.execute("INSERT INTO messages (chat_id, role, content, context_count) VALUES (?, ?, ?, ?)", (chat_id, "user", payload.message, 0))
+    conn.execute(
+        "INSERT INTO messages (chat_id, role, content, context_count, rag_references) VALUES (?, ?, ?, ?, ?)",
+        (chat_id, "user", payload.message, 0, json.dumps([])),
+    )
     conn.commit()
 
     try:
@@ -328,15 +359,20 @@ def chat(payload: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail="Graph returned no messages.")
 
     reply = message_to_text(messages[-1])
-    context_count = len(state.get("context", []))
+    rag_references = state.get("context", [])
+    context_count = len(rag_references)
     
-    conn.execute("INSERT INTO messages (chat_id, role, content, context_count) VALUES (?, ?, ?, ?)", (chat_id, "assistant", reply, context_count))
+    conn.execute(
+        "INSERT INTO messages (chat_id, role, content, context_count, rag_references) VALUES (?, ?, ?, ?, ?)",
+        (chat_id, "assistant", reply, context_count, json.dumps(rag_references)),
+    )
     conn.commit()
     conn.close()
 
     return ChatResponse(
         reply=reply,
         context_count=context_count,
+        rag_references=rag_references,
         provider=CHAT_PROVIDER,
         chat_id=chat_id
     )
