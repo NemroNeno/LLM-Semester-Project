@@ -183,6 +183,13 @@
 
         .loading { display: none; padding: 0 24px 16px 24px; align-self: flex-start; }
         .loading.visible { display: block; }
+        .loading-label {
+            margin-top: 8px;
+            margin-left: 4px;
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+        }
         .typing-indicator {
             display: inline-flex; gap: 4px; padding: 12px 16px;
             background: var(--assistant); border-radius: 12px; border-bottom-left-radius: 4px;
@@ -226,6 +233,7 @@
             </div>
             <div id="loading" class="loading">
                 <div class="typing-indicator"><span></span><span></span><span></span></div>
+                <div id="loading-label" class="loading-label">Assistant is thinking...</div>
             </div>
 
             <div class="composer">
@@ -243,6 +251,7 @@
         const button = document.getElementById("send-button");
         const messages = document.getElementById("messages");
         const loading = document.getElementById("loading");
+        const loadingLabel = document.getElementById("loading-label");
         const chatList = document.getElementById("chat-list");
         const newChatBtn = document.getElementById("new-chat-btn");
         const providerSelect = document.getElementById("provider-select");
@@ -326,10 +335,28 @@
             loading.classList.add("visible");
             messages.scrollTop = messages.scrollHeight;
             button.disabled = true;
+            loadingLabel.textContent = "Assistant is thinking...";
 
             const provider = providerSelect.value;
 
             try {
+                try {
+                    const summarizeProbeResponse = await fetch("/chat/will-summarize", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ message, chat_id: currentChatId }),
+                    });
+
+                    if (summarizeProbeResponse.ok) {
+                        const summarizeProbe = await summarizeProbeResponse.json();
+                        loadingLabel.textContent = summarizeProbe.will_summarize
+                            ? "Summarizing conversation history..."
+                            : "Assistant is thinking...";
+                    }
+                } catch (probeError) {
+                    loadingLabel.textContent = "Assistant is thinking...";
+                }
+
                 const response = await fetch("/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },

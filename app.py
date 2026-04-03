@@ -38,6 +38,8 @@ RETRIEVAL_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
 RETRIEVAL_LEXICAL_FETCH_K = int(os.getenv("RETRIEVAL_LEXICAL_FETCH_K", "24"))
 RETRIEVAL_BM25_FETCH_K = int(os.getenv("RETRIEVAL_BM25_FETCH_K", "24"))
 MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
+SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS", str(MAX_MESSAGE_TOKENS)))
+SUMMARY_RECENT_MESSAGE_COUNT = int(os.getenv("SUMMARY_RECENT_MESSAGE_COUNT", "8"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
 TEMPLATES = Jinja2Templates(directory="templates")
 
@@ -68,7 +70,6 @@ Use this response style:
 - Use a table when comparing values, options, or requirements.
 - Emphasize key terms with bold text.
 - Keep paragraphs short and readable.
-- End with a "### Quick Summary" section with 1-2 lines.
 Do not include markdown code fences unless the user explicitly asks for code.
 Keep the answer concise, directly relevant, and pleasant to read.
 
@@ -82,6 +83,7 @@ FALLBACK_ANSWER = "I do not have enough information in the provided banking data
 class State(MessagesState):
     context: list[str]
     trimmed_messages: list[BaseMessage]
+    conversation_summary: str
 
 
 def message_to_text(message: BaseMessage) -> str:
@@ -501,15 +503,92 @@ def retrieve_node(state: State, *, vector_store: Chroma | None = None) -> dict[s
 
 
 def trim_node(state: State) -> dict[str, list[BaseMessage]]:
+    summary_message: list[BaseMessage] = []
+    summary = (state.get("conversation_summary") or "").strip()
+    if summary:
+        summary_message = [
+            SystemMessage(
+                content=(
+                    "Conversation summary from earlier turns. "
+                    "Use it for continuity, but prioritize the latest user request and retrieved banking context.\n\n"
+                    f"{summary}"
+                )
+            )
+        ]
+
+    reserved_tokens = 0
+    if summary_message:
+        reserved_tokens = count_tokens_approximately(summary_message)
+
+    available_tokens = max(300, MAX_MESSAGE_TOKENS - reserved_tokens)
     trimmed = trim_messages(
         state["messages"],
         strategy="last",
         token_counter=count_tokens_approximately,
-        max_tokens=MAX_MESSAGE_TOKENS,
+        max_tokens=available_tokens,
         start_on="human",
         end_on=("human", "tool"),
     )
-    return {"trimmed_messages": list(trimmed)}
+    return {"trimmed_messages": [*summary_message, *list(trimmed)]}
+
+
+def summarize_node(state: State, *, chat_model: Any = None) -> dict[str, str]:
+    messages = list(state["messages"])
+    if count_tokens_approximately(messages) <= SUMMARY_TRIGGER_TOKENS:
+        return {"conversation_summary": state.get("conversation_summary", "")}
+
+    if len(messages) <= SUMMARY_RECENT_MESSAGE_COUNT + 2:
+        return {"conversation_summary": state.get("conversation_summary", "")}
+
+    if not chat_model:
+        raise ValueError("chat_model must be provided for summarization")
+
+    existing_summary = (state.get("conversation_summary") or "").strip()
+    messages_to_summarize = messages[:-SUMMARY_RECENT_MESSAGE_COUNT]
+
+    transcript_lines: list[str] = []
+    for message in messages_to_summarize:
+        if isinstance(message, HumanMessage):
+            role = "User"
+        elif isinstance(message, AIMessage):
+            role = "Assistant"
+        elif isinstance(message, SystemMessage):
+            role = "System"
+        else:
+            role = "Other"
+
+        text = message_to_text(message)
+        if text:
+            transcript_lines.append(f"{role}: {text}")
+
+    if not transcript_lines:
+        return {"conversation_summary": existing_summary}
+
+    summarization_prompt = (
+        "Summarize the conversation history for short-term memory.\n"
+        "Keep facts, user constraints, preferences, and unresolved asks.\n"
+        "Drop chit-chat and repetition.\n"
+        "Use concise bullet points.\n"
+        "Preserve exact financial figures, percentages, limits, tenures, and product names when present."
+    )
+
+    transcript_block = "\n".join(transcript_lines)
+
+    summary_request = (
+        f"Existing summary (may be empty):\n{existing_summary or 'None'}\n\n"
+        "New conversation chunk to fold in:\n"
+        f"{transcript_block}\n\n"
+        "Return an updated compact summary."
+    )
+
+    summary_response = chat_model.invoke(
+        [
+            SystemMessage(content=summarization_prompt),
+            HumanMessage(content=summary_request),
+        ]
+    )
+
+    return {"conversation_summary": message_to_text(summary_response)}
 
 
 def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any]]:
@@ -544,13 +623,18 @@ def build_graph(*, chat_model: Any = None, vector_store: Chroma | None = None):
         "retrieve",
         lambda state: retrieve_node(cast(State, state), vector_store=vector_store),
     )
+    builder.add_node(
+        "summarize",
+        lambda state: summarize_node(cast(State, state), chat_model=chat_model),
+    )
     builder.add_node("trim", trim_node)
     builder.add_node(
         "generate",
         lambda state: generate_node(cast(State, state), chat_model=chat_model),
     )
     builder.add_edge(START, "retrieve")
-    builder.add_edge("retrieve", "trim")
+    builder.add_edge("retrieve", "summarize")
+    builder.add_edge("summarize", "trim")
     builder.add_edge("trim", "generate")
     builder.add_edge("generate", END)
 
@@ -581,6 +665,15 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     chat_id: str | None = None
     provider: str = Field(default=CHAT_PROVIDER)
+
+
+class ChatWillSummarizeRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    chat_id: str | None = None
+
+
+class ChatWillSummarizeResponse(BaseModel):
+    will_summarize: bool
 
 class ChatResponse(BaseModel):
     reply: str
@@ -650,6 +743,39 @@ def index(request: Request):
             "thread_id": THREAD_ID,
         },
     )
+
+
+def should_summarize_next_turn(chat_id: str | None, message: str) -> bool:
+    if not chat_id:
+        return False
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
+        (chat_id,),
+    ).fetchall()
+    conn.close()
+
+    messages: list[BaseMessage] = []
+    for row in rows:
+        role = row["role"]
+        content = str(row["content"])
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+
+    messages.append(HumanMessage(content=message))
+    if len(messages) <= SUMMARY_RECENT_MESSAGE_COUNT + 2:
+        return False
+
+    return count_tokens_approximately(messages) > SUMMARY_TRIGGER_TOKENS
+
+
+@app.post("/chat/will-summarize", response_model=ChatWillSummarizeResponse)
+def chat_will_summarize(payload: ChatWillSummarizeRequest) -> ChatWillSummarizeResponse:
+    will_summarize = should_summarize_next_turn(payload.chat_id, payload.message)
+    return ChatWillSummarizeResponse(will_summarize=will_summarize)
 
 
 @app.post("/chat", response_model=ChatResponse)
