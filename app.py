@@ -30,9 +30,18 @@ OPENROUTER_MODEL = os.getenv("CHAT_MODEL", "qwen/qwen-2.5-7b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct")
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
+RETRIEVAL_FETCH_K = int(os.getenv("RETRIEVAL_FETCH_K", "24"))
+RETRIEVAL_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
 MAX_MESSAGE_TOKENS = int(os.getenv("MAX_MESSAGE_TOKENS", "1200"))
 THREAD_ID = os.getenv("LANGGRAPH_THREAD_ID", "global_session")
 TEMPLATES = Jinja2Templates(directory="templates")
+
+RERANK_DENSE_WEIGHT = float(os.getenv("RERANK_DENSE_WEIGHT", "0.45"))
+RERANK_LEXICAL_WEIGHT = float(os.getenv("RERANK_LEXICAL_WEIGHT", "0.30"))
+RERANK_RRF_WEIGHT = float(os.getenv("RERANK_RRF_WEIGHT", "0.15"))
+RERANK_METADATA_WEIGHT = float(os.getenv("RERANK_METADATA_WEIGHT", "0.10"))
+RERANK_RRF_SCALE = float(os.getenv("RERANK_RRF_SCALE", "30.0"))
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.22"))
 
 ASSISTANT_IDENTITY = (
     "I am the NUST banking assistant. I answer questions using the NUST banking "
@@ -45,7 +54,17 @@ Do not describe yourself as Qwen, OpenAI, Alibaba Cloud, OpenRouter, or a generi
 Answer only from the retrieved context below.
 If the context is missing, weak, or does not contain the answer, say: I do not have enough information in the provided banking data to answer that.
 Do not invent policies, fees, requirements, or product details.
-Keep the answer concise and directly relevant to the user's question.
+Format every answer in polished Markdown.
+Use this response style:
+- Keep the answer concise and directly relevant to the question.
+- Start with a short heading: "### Answer".
+- Use bullet points for multiple facts or steps.
+- Use a table when comparing values, options, or requirements.
+- Emphasize key terms with bold text.
+- Keep paragraphs short and readable.
+- End with a "### Quick Summary" section with 1-2 lines.
+Do not include markdown code fences unless the user explicitly asks for code.
+Keep the answer concise, directly relevant, and pleasant to read.
 
 Retrieved context:
 {context}
@@ -167,13 +186,156 @@ def format_context(documents: list[Any]) -> list[str]:
     return context_entries
 
 
+def tokenize_for_rerank(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9%./-]+", text.lower()) if token}
+
+
+def lexical_overlap_score(query: str, content: str) -> float:
+    query_tokens = tokenize_for_rerank(query)
+    if not query_tokens:
+        return 0.0
+
+    content_tokens = tokenize_for_rerank(content)
+    if not content_tokens:
+        return 0.0
+
+    overlap = query_tokens & content_tokens
+    coverage = len(overlap) / len(query_tokens)
+
+    # Banking queries often hinge on exact numerics (limits, tenures, rates).
+    numeric_tokens = {token for token in query_tokens if re.search(r"\d", token)}
+    numeric_overlap = len(numeric_tokens & content_tokens) / max(1, len(numeric_tokens))
+
+    return min(1.0, (coverage * 0.8) + (numeric_overlap * 0.2))
+
+
+def metadata_match_score(query: str, document: Any) -> float:
+    metadata = getattr(document, "metadata", {}) or {}
+    question = str(metadata.get("question", ""))
+    sheet = str(metadata.get("sheet", ""))
+    source_file = str(metadata.get("source_file", ""))
+    metadata_text = f"{question} {sheet} {source_file}".lower()
+
+    query_tokens = tokenize_for_rerank(query)
+    if not query_tokens or not metadata_text:
+        return 0.0
+
+    hits = sum(1 for token in query_tokens if token in metadata_text)
+    return min(1.0, hits / max(1, len(query_tokens)))
+
+
+def normalize_dense_score(score: float) -> float:
+    if 0.0 <= score <= 1.0:
+        return score
+    if score > 1.0:
+        return 1.0 / (1.0 + score)
+    return max(0.0, min(1.0, 1.0 + score))
+
+
+def safe_dense_candidates(store: Chroma, query: str, fetch_k: int) -> list[tuple[Any, float]]:
+    try:
+        docs_with_scores = store.similarity_search_with_relevance_scores(query, k=fetch_k)
+        return [(doc, normalize_dense_score(float(score))) for doc, score in docs_with_scores]
+    except Exception:
+        docs = store.similarity_search(query, k=fetch_k)
+        return [(doc, max(0.0, 1.0 - (index * 0.05))) for index, doc in enumerate(docs)]
+
+
+def safe_mmr_candidates(store: Chroma, query: str, top_k: int, fetch_k: int) -> list[Any]:
+    try:
+        return store.max_marginal_relevance_search(query, k=top_k, fetch_k=fetch_k)
+    except Exception:
+        return []
+
+
+def document_key(document: Any) -> str:
+    metadata = getattr(document, "metadata", {}) or {}
+    source_file = str(metadata.get("source_file", ""))
+    record_index = str(metadata.get("record_index", ""))
+    sheet = str(metadata.get("sheet", ""))
+    key = f"{source_file}:{record_index}:{sheet}"
+    if key.strip(":"):
+        return key
+    return str(getattr(document, "page_content", ""))
+
+
+def rerank_documents(query: str, dense_candidates: list[tuple[Any, float]], mmr_candidates: list[Any]) -> list[Any]:
+    candidates: dict[str, dict[str, Any]] = {}
+
+    for dense_rank, (document, dense_score) in enumerate(dense_candidates, start=1):
+        key = document_key(document)
+        bucket = candidates.setdefault(
+            key,
+            {
+                "document": document,
+                "dense_score": 0.0,
+                "dense_rank": dense_rank,
+                "mmr_rank": None,
+            },
+        )
+        if dense_score > bucket["dense_score"]:
+            bucket["dense_score"] = dense_score
+        if dense_rank < bucket["dense_rank"]:
+            bucket["dense_rank"] = dense_rank
+
+    for mmr_rank, document in enumerate(mmr_candidates, start=1):
+        key = document_key(document)
+        bucket = candidates.setdefault(
+            key,
+            {
+                "document": document,
+                "dense_score": 0.0,
+                "dense_rank": 10_000,
+                "mmr_rank": mmr_rank,
+            },
+        )
+        if bucket["mmr_rank"] is None or mmr_rank < bucket["mmr_rank"]:
+            bucket["mmr_rank"] = mmr_rank
+
+    scored: list[tuple[float, Any]] = []
+    rrf_k = 60.0
+    for bucket in candidates.values():
+        document = bucket["document"]
+        dense_score = float(bucket["dense_score"])
+        lexical_score = lexical_overlap_score(query, str(getattr(document, "page_content", "")))
+        meta_score = metadata_match_score(query, document)
+
+        rrf = 1.0 / (rrf_k + float(bucket["dense_rank"]))
+        if bucket["mmr_rank"] is not None:
+            rrf += 1.0 / (rrf_k + float(bucket["mmr_rank"]))
+        rrf_score = min(1.0, rrf * RERANK_RRF_SCALE)
+
+        final_score = (
+            (dense_score * RERANK_DENSE_WEIGHT)
+            + (lexical_score * RERANK_LEXICAL_WEIGHT)
+            + (rrf_score * RERANK_RRF_WEIGHT)
+            + (meta_score * RERANK_METADATA_WEIGHT)
+        )
+        scored.append((final_score, document))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    filtered = [document for score, document in scored if score >= RERANK_MIN_SCORE]
+    if filtered:
+        return filtered[:RETRIEVAL_TOP_K]
+
+    # Fall back to top scored docs if strict threshold removes everything.
+    return [document for _, document in scored[:RETRIEVAL_TOP_K]]
+
+
 def retrieve_node(state: State, *, vector_store: Chroma | None = None) -> dict[str, list[str]]:
     store = vector_store or get_vector_store()
     query = get_latest_user_text(state["messages"])
     if not query:
         return {"context": []}
 
-    documents = store.similarity_search(query, k=RETRIEVAL_TOP_K)
+    dense_candidates = safe_dense_candidates(store, query, fetch_k=RETRIEVAL_FETCH_K)
+    mmr_candidates = safe_mmr_candidates(
+        store,
+        query,
+        top_k=max(RETRIEVAL_TOP_K * 2, RETRIEVAL_TOP_K),
+        fetch_k=RETRIEVAL_MMR_FETCH_K,
+    )
+    documents = rerank_documents(query, dense_candidates, mmr_candidates)
     return {"context": format_context(documents)}
 
 
