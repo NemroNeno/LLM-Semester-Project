@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "Read",
+      "WebSearch"
+    ]
+  }
+}

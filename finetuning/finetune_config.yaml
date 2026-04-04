@@ -1,0 +1,91 @@
+# ============================================================
+# QLoRA Fine-Tuning Configuration
+# Model  : Qwen/Qwen2.5-3B-Instruct
+# Dataset: bitext/Bitext-customer-support-llm-chatbot-training-dataset
+# Target : Google Colab Free Tier (T4, ~15 GB VRAM)
+# Goal   : Light domain adaptation — NOT full convergence
+# ============================================================
+
+# ── Model ───────────────────────────────────────────────────
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"
+  max_seq_length: 512          # EDA shows 99% of samples fit in 512 tokens
+  torch_dtype: "bfloat16"      # bfloat16 for compute; weights stored in 4-bit
+
+# ── Dataset ─────────────────────────────────────────────────
+dataset:
+  name: "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
+  split: "train"
+  train_samples: 6000          # Subset — fast training, avoids overfitting
+  val_samples: 600             # Held-out validation split
+  eval_gen_samples: 5          # Prompts used for before/after generation comparison
+  eval_ppl_samples: 300        # Samples used to compute perplexity
+  seed: 42
+
+# ── 4-bit Quantization (BitsAndBytes) ───────────────────────
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"           # NormalFloat4 — best for LLM weights
+  bnb_4bit_compute_dtype: "bfloat16"   # Dequantize to bf16 for forward pass
+  bnb_4bit_use_double_quant: true      # Nested quant saves ~0.4 bits extra
+
+# ── LoRA Adapter ────────────────────────────────────────────
+# Small rank — we only want light domain adaptation, not overfit
+lora:
+  r: 8                                 # Low rank; keeps adapter small & fast
+  lora_alpha: 16                       # Scaling = alpha / r = 2.0
+  target_modules:                      # Only attention projections — minimal footprint
+    - "q_proj"
+    - "v_proj"
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# ── Training ────────────────────────────────────────────────
+training:
+  num_epochs: 1                        # Single epoch — light exposure, no overfit
+  per_device_train_batch_size: 2       # T4 safe; auto-tuned down if OOM
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8      # Effective batch = 2 * 8 = 16
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05                   # 5% warmup steps
+  lr_scheduler_type: "cosine"
+  bf16: true                           # bfloat16 mixed precision
+  fp16: false
+  gradient_checkpointing: false        # Disabled to drastically speed up training (trades VRAM for speed)
+  optim: "adamw_bnb_8bit"             # 8-bit AdamW — halves optimizer VRAM
+  dataloader_num_workers: 2
+
+# ── Checkpointing & Logging ─────────────────────────────────
+checkpointing:
+  output_dir: "/content/qlora_qwen_customer_support"
+  logging_steps: 10
+  eval_steps: 50
+  save_steps: 50
+  save_total_limit: 2                  # Keep only last 2 checkpoints
+
+# ── MLflow Experiment Tracking (DagsHub remote) ─────────────
+mlflow:
+  experiment_name: "qwen25_3b_qlora_banking_conversation"
+  run_name: "qlora_r8_1epoch_6k"
+  # DagsHub hosted MLflow — replace with your username and repo name
+  dagshub_username: "nemroneno2526"
+  dagshub_repo: "LLM_project"
+  tracking_uri: "https://dagshub.com/nemroneno2526/LLM_project.mlflow"
+
+# ── Prompt Template (ChatML — Qwen2.5-Instruct native) ──────
+prompt:
+  system: "You are a helpful customer support assistant. Answer clearly and concisely."
+  template: |
+    <|im_start|>system
+    {system}<|im_end|>
+    <|im_start|>user
+    {instruction}<|im_end|>
+    <|im_start|>assistant
+    {response}<|im_end|>
+  eos_token: "<|im_end|>"
+
+# ── Post-training ───────────────────────a
+  repetition_penalty: 1.1

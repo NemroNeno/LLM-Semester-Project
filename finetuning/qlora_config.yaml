@@ -1,0 +1,118 @@
+# ============================================================
+# QLoRA Fine-Tuning Configuration
+# Model: qwen2.5:3b-instruct  (Qwen/Qwen2.5-3B-Instruct on HF)
+# Dataset: bitext/Bitext-customer-support-llm-chatbot-training-dataset
+# Method: QLoRA (Quantized Low-Rank Adaptation)
+# ============================================================
+
+# ----------------------------
+# Model & Dataset
+# ----------------------------
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"        # HuggingFace model ID
+  max_seq_length: 2048                      # Maximum token length per sample
+  dtype: "bfloat16"                         # Compute dtype (bfloat16 recommended for modern GPUs)
+  load_in_4bit: true                        # Enable 4-bit quantization (QLoRA core)
+
+dataset:
+  name: "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
+  split: "train"                            # Dataset split to use
+  instruction_field: "instruction"          # Column name for user instructions
+  response_field: "response"                # Column name for expected responses
+  category_field: "category"               # Column name for high-level intent category
+  intent_field: "intent"                    # Column name for fine-grained intent
+  flags_field: "flags"                      # Column name for linguistic variation tags
+  test_size: 0.1                            # Fraction held out for validation
+  seed: 42                                  # Random seed for reproducible splits
+
+# ----------------------------
+# Quantization (BitsAndBytes)
+# ----------------------------
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"               # NormalFloat4 quantization (better than fp4 for LLMs)
+  bnb_4bit_compute_dtype: "bfloat16"       # Dtype for computation after dequantization
+  bnb_4bit_use_double_quant: true          # Double quantization (saves ~0.4 bits/param extra)
+
+# ----------------------------
+# LoRA Adapter
+# ----------------------------
+lora:
+  r: 64                                     # Rank of the LoRA update matrices (higher = more params)
+  lora_alpha: 16                            # Scaling factor (effective LR = alpha / r)
+  target_modules:                           # Which linear layers to adapt
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  lora_dropout: 0.05                        # Dropout in LoRA layers (regularization)
+  bias: "none"                              # Do not train bias terms
+  task_type: "CAUSAL_LM"                   # Task type for PEFT library
+
+# ----------------------------
+# Training Arguments
+# ----------------------------
+training:
+  output_dir: "./finetuning/outputs"        # Where to save checkpoints and final model
+  num_train_epochs: 3                       # Number of full passes over the training data
+  per_device_train_batch_size: 2            # Batch size per GPU during training
+  per_device_eval_batch_size: 2             # Batch size per GPU during evaluation
+  gradient_accumulation_steps: 4           # Accumulate grads over N steps before update
+                                            # Effective batch = 2 * 4 = 8 per GPU
+  gradient_checkpointing: true             # Trade compute for memory (required with QLoRA)
+  learning_rate: 2.0e-4                     # Peak learning rate
+  weight_decay: 0.001                       # L2 regularization coefficient
+  max_grad_norm: 0.3                        # Gradient clipping threshold
+  warmup_ratio: 0.03                        # Fraction of steps for LR warmup
+  lr_scheduler_type: "cosine"              # LR schedule: linear warmup then cosine decay
+  fp16: false                               # Use fp16 mixed precision (set true if no bfloat16)
+  bf16: true                                # Use bfloat16 (preferred on Ampere+ GPUs)
+  optim: "paged_adamw_32bit"               # Paged AdamW optimizer (reduces GPU OOM risk)
+  group_by_length: true                    # Group similar-length samples to minimize padding
+  max_steps: -1                             # -1 means train for full num_train_epochs
+  logging_steps: 25                         # Log metrics every N steps
+  eval_strategy: "steps"                   # Evaluate every eval_steps
+  eval_steps: 100                           # Run evaluation every N steps
+  save_strategy: "steps"                   # Save checkpoint every save_steps
+  save_steps: 100                           # Save a checkpoint every N steps
+  save_total_limit: 3                       # Keep only the 3 most recent checkpoints
+  load_best_model_at_end: true             # Load best checkpoint when training ends
+  metric_for_best_model: "eval_loss"       # Metric used to pick the best checkpoint
+  greater_is_better: false                  # Lower eval_loss = better
+  report_to: "none"                         # Disable external logging (set to "wandb" if needed)
+  push_to_hub: false                        # Do not push adapter to HuggingFace Hub
+
+# ----------------------------
+# SFT (Supervised Fine-Tuning) Trainer
+# ----------------------------
+sft:
+  dataset_text_field: "text"               # Column in formatted dataset containing full prompt
+  max_seq_length: 2048                      # Truncate samples exceeding this length
+  packing: false                            # Disable sample packing (simpler, safer for chat data)
+
+# ----------------------------
+# Prompt Template
+# ----------------------------
+prompt:
+  # ChatML-style template matching Qwen2.5-Instruct chat format
+  template: |
+    <|im_start|>system
+    You are a helpful customer support assistant. Answer clearly and concisely.<|im_end|>
+    <|im_start|>user
+    {instruction}<|im_end|>
+    <|im_start|>assistant
+    {response}<|im_end|>
+  eos_token: "<|im_end|>"                  # Token that ends each turn
+
+# ----------------------------
+# Inference / Merging (post-training)
+# ----------------------------
+inference:
+  merge_adapter_into_base: true            # Merge LoRA weights into base model for deployment
+  merged_model_output_dir: "./finetuning/merged_model"
+  max_new_tokens: 512                      # Max tokens to generate during inference
+  temperature: 0.1                         # Low temperature for deterministic support answers
+  repetition_penalty: 1.1                  # Penalize repetition in responses
