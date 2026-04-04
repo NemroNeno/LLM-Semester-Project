@@ -1,0 +1,11 @@
+{
+  "examples": 400,
+  "provider": "ollama",
+  "eval_model": "qwen2.5:3b-instruct",
+  "metrics": {
+    "context_precision": 0.7517361110596608,
+    "context_recall": 0.7680398925968546,
+    "faithfulness": 0.5395363408521303,
+    "factual_correctness": null
+  }
+}
