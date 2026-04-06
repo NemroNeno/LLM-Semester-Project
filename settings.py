@@ -44,3 +44,18 @@ OPENROUTER_INGEST_MODEL = os.getenv("OPENROUTER_INGEST_MODEL", "google/gemini-2.
 INGESTION_DEFAULT_QA_COUNT = int(os.getenv("INGESTION_DEFAULT_QA_COUNT", "5"))
 INGESTION_MAX_CHUNK_CHARS = int(os.getenv("INGESTION_MAX_CHUNK_CHARS", "6000"))
 INGESTION_JOB_POLL_SECONDS = float(os.getenv("INGESTION_JOB_POLL_SECONDS", "1.0"))
+
+KG_ENABLED = os.getenv("KG_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+KG_TOP_K = int(os.getenv("KG_TOP_K", "2"))
+KG_STATIC_GROUP_ID = os.getenv("KG_STATIC_GROUP_ID", "nust-markdown")
+KG_DYNAMIC_GROUP_ID = os.getenv("KG_DYNAMIC_GROUP_ID", "nust-uploaded")
+
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+
+GRAPHITI_LLM_MODEL = os.getenv("GRAPHITI_LLM_MODEL", "google/gemini-2.5-flash")
+GRAPHITI_EMBED_MODEL = os.getenv("GRAPHITI_EMBED_MODEL", "text-embedding-3-small")
+GRAPHITI_RERANK_MODEL = os.getenv("GRAPHITI_RERANK_MODEL", "openai/gpt-4o-mini")
+GRAPHITI_BASE_URL = os.getenv("GRAPHITI_BASE_URL", OPENROUTER_BASE_URL)
+GRAPHITI_API_KEY = os.getenv("GRAPHITI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")

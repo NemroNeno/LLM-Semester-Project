@@ -36,6 +36,7 @@ class ChatResponse(BaseModel):
     reply: str
     context_count: int
     rag_references: list[str] = Field(default_factory=list)
+    kg_references: list[str] = Field(default_factory=list)
     provider: str
     chat_id: str
 
@@ -110,8 +111,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
         conn.commit()
 
     conn.execute(
-        "INSERT INTO messages (chat_id, role, content, context_count, rag_references) VALUES (?, ?, ?, ?, ?)",
-        (chat_id, "user", payload.message, 0, json.dumps([])),
+        "INSERT INTO messages (chat_id, role, content, context_count, rag_references, kg_references) VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, "user", payload.message, 0, json.dumps([]), json.dumps([])),
     )
     conn.commit()
 
@@ -131,11 +132,12 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
     reply = message_to_text(messages[-1])
     rag_references = state.get("context", [])
+    kg_references = state.get("kg_context", [])
     context_count = len(rag_references)
 
     conn.execute(
-        "INSERT INTO messages (chat_id, role, content, context_count, rag_references) VALUES (?, ?, ?, ?, ?)",
-        (chat_id, "assistant", reply, context_count, json.dumps(rag_references)),
+        "INSERT INTO messages (chat_id, role, content, context_count, rag_references, kg_references) VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, "assistant", reply, context_count, json.dumps(rag_references), json.dumps(kg_references)),
     )
     conn.commit()
     conn.close()
@@ -144,6 +146,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
         reply=reply,
         context_count=context_count,
         rag_references=rag_references,
+        kg_references=kg_references,
         provider=selected_provider,
         chat_id=chat_id,
     )
