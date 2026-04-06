@@ -7,11 +7,13 @@ The project is a modular FastAPI application implementing a hybrid RAG + knowled
 Primary flow:
 
 1. User submits message from web UI.
-2. API stores user message in SQLite.
-3. LangGraph pipeline executes retrieve -> summarize -> trim -> generate.
-4. Assistant response and RAG references are persisted.
-5. Assistant response, RAG references, and KG references are persisted.
-6. UI renders markdown answer with both RAG and KG source snippets.
+2. API runs Guardrails input validation; blocked input returns a safe refusal.
+3. API stores accepted user message in SQLite.
+4. LangGraph pipeline executes retrieve -> summarize -> trim -> generate.
+5. Generate node runs Guardrails output validation before final persistence.
+6. Assistant response and RAG references are persisted.
+7. Assistant response, RAG references, and KG references are persisted.
+8. UI renders markdown answer with both RAG and KG source snippets.
 
 Admin ingestion flow:
 
@@ -84,7 +86,8 @@ Key behaviors:
 
 - Identity query short-circuit
 - Empty-context fallback response
-- External bank mention output guardrail
+- Guardrails output validation for toxicity, private data, and grounding checks
+- External bank mention output guardrail as fallback layer
 
 ### 2.4 document_ingestion.py
 
@@ -118,6 +121,20 @@ Responsibility:
 - Admin ingestion endpoints
 - Startup DB initialization hook
 - Chat payload support for both rag_references and kg_references
+- Guardrails input validation before graph invocation
+
+### 2.13 guardrails_service.py
+
+Responsibility:
+
+- Centralized Guardrails AI validation for user input and model output
+- ToxicLanguage, PrivateData, and AntiHallucination validator flow
+
+Key design:
+
+- Input validation blocks unsafe content before graph execution
+- Output validation blocks unsafe or weakly grounded responses after generation
+- Guardrails runtime errors degrade gracefully to preserve chat availability
 
 ### 2.6 knowledge_graph.py
 

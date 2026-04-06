@@ -142,13 +142,23 @@ FR-28 The system shall trim messages to configured token budget before final gen
 
 ### 3.6 Guardrails and Response Behavior
 
-FR-29 The system shall detect identity queries and return fixed assistant identity text without model generation.
+GR-1 The system shall detect identity queries and return fixed assistant identity text without model generation.
 
-FR-30 If neither RAG context nor KG context exists, the system shall return a fixed fallback response.
+GR-2 If neither RAG context nor KG context exists, the system shall return a fixed fallback response.
 
-FR-31 The system shall block final outputs that reference external bank entities by replacing with domain guardrail answer.
+GR-3 The system shall run Guardrails AI input validation before graph execution for each chat request.
 
-FR-32 The system shall format generated responses in markdown per system prompt style rules.
+GR-4 Input validation shall include ToxicLanguage and PrivateData checks and block unsafe content with a safe refusal response.
+
+GR-5 The system shall run Guardrails AI output validation on generated responses before persistence.
+
+GR-6 Output validation shall include ToxicLanguage, PrivateData, and AntiHallucination checks using retrieved context as grounding metadata.
+
+GR-7 If output validation fails, the system shall replace the generated text with configured fallback response.
+
+GR-8 The system shall keep external-bank regex filtering as a secondary fallback guardrail layer.
+
+GR-9 The system shall format generated responses in markdown per system prompt style rules.
 
 ### 3.7 Admin Document Ingestion
 

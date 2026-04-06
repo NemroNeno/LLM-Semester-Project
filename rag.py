@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from guardrails_service import validate_model_output
 from knowledge_graph import search_knowledge_graph
 
 from settings import (
@@ -661,6 +662,15 @@ def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any
     )
 
     response_text = message_to_text(response)
+    output_validation = validate_model_output(
+        response_text,
+        user_question=latest_user_text,
+        rag_context=context,
+        kg_context=kg_context,
+    )
+    if output_validation.blocked:
+        return {"messages": [AIMessage(content=output_validation.message)]}
+
     if references_external_bank(response_text):
         return {"messages": [AIMessage(content=DOMAIN_GUARDRAIL_ANSWER)]}
 

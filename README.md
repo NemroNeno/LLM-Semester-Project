@@ -18,6 +18,7 @@ Local RAG chatbot for banking Q&A data using LangGraph, FastAPI, OpenRouter or O
 - `langchain-openai` for `ChatOpenAI` against OpenRouter's OpenAI-compatible endpoint
 - `langchain-ollama` for local `OllamaEmbeddings` and later local `ChatOllama` usage
 - `langchain-chroma` + `chromadb` for persistent local vector storage
+- `guardrails-ai` for runtime input/output safety validation (toxicity, private data, grounding)
 
 ## Why These Packages
 
@@ -117,6 +118,32 @@ Relevant environment variables:
 - `INGESTION_MAX_CHUNK_CHARS` default: `6000`
 - `INGESTION_JOB_POLL_SECONDS` default: `1.0`
 
+## Guardrails Safety Layer
+
+The chat path now uses Guardrails AI in two places:
+
+- Input validation at `/chat` request boundary
+- Output validation in LangGraph `generate` node before final response persistence
+
+Configured validators:
+
+- `ToxicLanguage` equivalent validator for unsafe/toxic wording
+- `PrivateData` equivalent validator for sensitive data patterns (email, phone, CNIC-like ID, card-like numbers)
+- `AntiHallucination` equivalent validator for weakly grounded or unsupported numeric claims
+
+Behavior:
+
+- Unsafe input is blocked immediately with a safe refusal response.
+- Unsafe or weakly grounded model output is replaced with the configured fallback answer.
+- Existing external-bank regex guardrail remains active as a secondary fallback.
+
+Environment flags:
+
+- `GUARDRAILS_ENABLED` default: `true`
+- `GUARDRAILS_INPUT_BLOCK_MESSAGE` default: safe refusal for blocked user input
+- `GUARDRAILS_OUTPUT_BLOCK_MESSAGE` default: fallback answer for blocked model output
+- `GUARDRAILS_LOG_FAILURES` default: `true`
+
 ## Troubleshooting
 
 - If `/chat` returns a `503`, set `OPENROUTER_API_KEY` or switch to `CHAT_PROVIDER=ollama` after the local chat model is available.
@@ -124,6 +151,7 @@ Relevant environment variables:
 - If embeddings fail, verify that Ollama is running and `ollama list` shows `nomic-embed-text`.
 - If you want to move back to local generation later, set `CHAT_PROVIDER=ollama` and ensure `OLLAMA_CHAT_MODEL` points to an installed local model.
 - If retrieval finds no useful documents, the app returns a safe fallback instead of fabricating an answer.
+- If guardrails seem too strict in local testing, tune only the guardrail env vars first before changing code.
 
 ## Data Source
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from db import get_db, init_db, list_chat_messages, list_chats, should_summarize_next_turn
 from document_ingestion import delete_document, get_document_status, ingest_uploaded_document, list_documents
+from guardrails_service import validate_user_input
 from rag import CHAT_PROVIDER, OLLAMA_CHAT_MODEL, OLLAMA_FINETUNED_CHAT_MODEL, OPENROUTER_MODEL, invoke_graph, message_to_text, normalize_provider
 from settings import TEMPLATES_DIRECTORY, THREAD_ID
 
@@ -104,11 +105,33 @@ def chat_will_summarize(payload: ChatWillSummarizeRequest) -> ChatWillSummarizeR
 def chat(payload: ChatRequest) -> ChatResponse:
     chat_id = payload.chat_id or str(uuid.uuid4())
     selected_provider = normalize_provider(payload.provider)
+    validation = validate_user_input(payload.message)
+
     conn = get_db()
     if not payload.chat_id:
         title = payload.message[:30] + "..." if len(payload.message) > 30 else payload.message
         conn.execute("INSERT INTO chats (id, title) VALUES (?, ?)", (chat_id, title))
         conn.commit()
+
+    if validation.blocked:
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, context_count, rag_references, kg_references) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, "user", payload.message, 0, json.dumps([]), json.dumps([])),
+        )
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, context_count, rag_references, kg_references) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, "assistant", validation.message, 0, json.dumps([]), json.dumps([])),
+        )
+        conn.commit()
+        conn.close()
+        return ChatResponse(
+            reply=validation.message,
+            context_count=0,
+            rag_references=[],
+            kg_references=[],
+            provider=selected_provider,
+            chat_id=chat_id,
+        )
 
     conn.execute(
         "INSERT INTO messages (chat_id, role, content, context_count, rag_references, kg_references) VALUES (?, ?, ?, ?, ?, ?)",

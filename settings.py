@@ -59,3 +59,20 @@ GRAPHITI_EMBED_MODEL = os.getenv("GRAPHITI_EMBED_MODEL", "text-embedding-3-small
 GRAPHITI_RERANK_MODEL = os.getenv("GRAPHITI_RERANK_MODEL", "openai/gpt-4o-mini")
 GRAPHITI_BASE_URL = os.getenv("GRAPHITI_BASE_URL", OPENROUTER_BASE_URL)
 GRAPHITI_API_KEY = os.getenv("GRAPHITI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+
+GUARDRAILS_ENABLED = os.getenv("GUARDRAILS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+GUARDRAILS_INPUT_BLOCK_MESSAGE = os.getenv(
+	"GUARDRAILS_INPUT_BLOCK_MESSAGE",
+	"I can only assist with safe, NUST banking-related questions. Please rephrase your request.",
+)
+GUARDRAILS_OUTPUT_BLOCK_MESSAGE = os.getenv(
+	"GUARDRAILS_OUTPUT_BLOCK_MESSAGE",
+	"I do not have enough information in the provided banking data to answer that.",
+)
+GUARDRAILS_MIN_GROUNDED_RATIO = float(os.getenv("GUARDRAILS_MIN_GROUNDED_RATIO", "0.12"))
+GUARDRAILS_LOG_FAILURES = os.getenv("GUARDRAILS_LOG_FAILURES", "true").strip().lower() in {
+	"1",
+	"true",
+	"yes",
+	"on",
+}
