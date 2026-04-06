@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from db import get_db, init_db, list_chat_messages, list_chats, should_summarize_next_turn
 from document_ingestion import delete_document, get_document_status, ingest_uploaded_document, list_documents
-from rag import CHAT_PROVIDER, OLLAMA_CHAT_MODEL, OPENROUTER_MODEL, invoke_graph, message_to_text
+from rag import CHAT_PROVIDER, OLLAMA_CHAT_MODEL, OLLAMA_FINETUNED_CHAT_MODEL, OPENROUTER_MODEL, invoke_graph, message_to_text, normalize_provider
 from settings import TEMPLATES_DIRECTORY, THREAD_ID
 
 TEMPLATES = Jinja2Templates(directory=TEMPLATES_DIRECTORY)
@@ -74,12 +74,19 @@ def chat_messages(chat_id: str = Path(...)) -> list[dict[str, Any]]:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    if CHAT_PROVIDER == "openrouter":
+        display_model = OPENROUTER_MODEL
+    elif CHAT_PROVIDER == "ollama-finetuned":
+        display_model = OLLAMA_FINETUNED_CHAT_MODEL
+    else:
+        display_model = OLLAMA_CHAT_MODEL
+
     return TEMPLATES.TemplateResponse(
         request=request,
         name="index.html",
         context={
             "chat_provider": CHAT_PROVIDER,
-            "chat_model": OPENROUTER_MODEL if CHAT_PROVIDER == "openrouter" else OLLAMA_CHAT_MODEL,
+            "chat_model": display_model,
             "thread_id": THREAD_ID,
         },
     )
@@ -95,6 +102,7 @@ def chat_will_summarize(payload: ChatWillSummarizeRequest) -> ChatWillSummarizeR
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
     chat_id = payload.chat_id or str(uuid.uuid4())
+    selected_provider = normalize_provider(payload.provider)
     conn = get_db()
     if not payload.chat_id:
         title = payload.message[:30] + "..." if len(payload.message) > 30 else payload.message
@@ -108,7 +116,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
     conn.commit()
 
     try:
-        state = invoke_graph(payload.message, thread_id=chat_id, provider=payload.provider)
+        state = invoke_graph(payload.message, thread_id=chat_id, provider=selected_provider)
     except RuntimeError as exc:
         conn.close()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -136,7 +144,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
         reply=reply,
         context_count=context_count,
         rag_references=rag_references,
-        provider=payload.provider,
+        provider=selected_provider,
         chat_id=chat_id,
     )
 

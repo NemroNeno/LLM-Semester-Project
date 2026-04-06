@@ -23,6 +23,7 @@ from settings import (
     MAX_MESSAGE_TOKENS,
     OLLAMA_BASE_URL,
     OLLAMA_CHAT_MODEL,
+    OLLAMA_FINETUNED_CHAT_MODEL,
     OLLAMA_EMBEDDING_MODEL,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
@@ -100,6 +101,20 @@ EXTERNAL_BANK_PATTERNS = (
     r"\bnibs\b",
 )
 
+PROVIDER_ALIASES: dict[str, str] = {
+    "openrouter": "openrouter",
+    "ollama": "ollama",
+    "ollama-finetuned": "ollama-finetuned",
+    "ollama_finetuned": "ollama-finetuned",
+    "ollama-fine-tuned": "ollama-finetuned",
+    "finetuned": "ollama-finetuned",
+}
+
+
+def normalize_provider(provider: str) -> str:
+    normalized = (provider or "").strip().lower()
+    return PROVIDER_ALIASES.get(normalized, normalized)
+
 
 class State(MessagesState):
     context: list[str]
@@ -174,6 +189,7 @@ def get_vector_store() -> Chroma:
 
 @lru_cache(maxsize=2)
 def get_chat_model(provider: str) -> Any:
+    provider = normalize_provider(provider)
     if provider == "openrouter":
         api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -198,10 +214,11 @@ def get_chat_model(provider: str) -> Any:
             default_headers=headers or None,
         )
 
-    if provider == "ollama":
+    if provider in {"ollama", "ollama-finetuned"}:
         chat_ollama: Any = ChatOllama
+        selected_model = OLLAMA_FINETUNED_CHAT_MODEL if provider == "ollama-finetuned" else OLLAMA_CHAT_MODEL
         return chat_ollama(
-            model=OLLAMA_CHAT_MODEL,
+            model=selected_model,
             base_url=OLLAMA_BASE_URL,
             temperature=0.0,
         )
@@ -674,7 +691,8 @@ def get_graph(provider: str):
 
 
 def invoke_graph(message: str, thread_id: str = THREAD_ID, provider: str = CHAT_PROVIDER, graph: Any = None) -> dict[str, Any]:
-    compiled_graph = graph or get_graph(provider)
+    normalized_provider = normalize_provider(provider)
+    compiled_graph = graph or get_graph(normalized_provider)
     return compiled_graph.invoke(
         cast(State, {"messages": [HumanMessage(content=message)]}),
         config={"configurable": {"thread_id": thread_id}},

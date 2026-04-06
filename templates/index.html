@@ -460,6 +460,7 @@
                         <select id="provider-select" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.1); color: white; margin-top: 4px;">
                             <option value="openrouter" style="color: black;" {% if chat_provider == 'openrouter' %}selected{% endif %}>OpenRouter (Qwen-2.5-7b)</option>
                             <option value="ollama" style="color: black;" {% if chat_provider == 'ollama' %}selected{% endif %}>Local Ollama (Qwen2.5-3b-instruct)</option>
+                            <option value="ollama-finetuned" style="color: black;" {% if chat_provider == 'ollama-finetuned' %}selected{% endif %}>Local Ollama (Qwen2.5-3b Fine-tuned)</option>
                         </select>
                     </div>
                 </section>

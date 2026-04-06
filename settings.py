@@ -11,10 +11,14 @@ CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "banking_qa")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 QA_DIRECTORY = os.getenv("QA_DIRECTORY", "sheets_qa")
-CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openrouter").lower()
+CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", "openrouter").strip().lower()
 OPENROUTER_MODEL = os.getenv("CHAT_MODEL", "qwen/qwen-2.5-7b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:3b-instruct")
+OLLAMA_FINETUNED_CHAT_MODEL = os.getenv(
+	"OLLAMA_FINETUNED_CHAT_MODEL",
+	"qwen2.5:3b-instruct-bitext-cs-dataet-tuned",
+)
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 RETRIEVAL_FETCH_K = int(os.getenv("RETRIEVAL_FETCH_K", "24"))
 RETRIEVAL_MMR_FETCH_K = int(os.getenv("RETRIEVAL_MMR_FETCH_K", "40"))
