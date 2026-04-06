@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from knowledge_graph import search_knowledge_graph
 
 from settings import (
     CHAT_PROVIDER,
@@ -27,6 +28,7 @@ from settings import (
     OLLAMA_EMBEDDING_MODEL,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
+    KG_TOP_K,
     QA_DIRECTORY,
     RERANK_BM25_WEIGHT,
     RERANK_DENSE_WEIGHT,
@@ -118,6 +120,7 @@ def normalize_provider(provider: str) -> str:
 
 class State(MessagesState):
     context: list[str]
+    kg_context: list[str]
     trimmed_messages: list[BaseMessage]
     conversation_summary: str
 
@@ -531,7 +534,7 @@ def retrieve_node(state: State, *, vector_store: Chroma | None = None) -> dict[s
     store = vector_store or get_vector_store()
     query = get_latest_user_text(state["messages"])
     if not query:
-        return {"context": []}
+        return {"context": [], "kg_context": []}
 
     dense_candidates = safe_dense_candidates(store, query, fetch_k=RETRIEVAL_FETCH_K)
     mmr_candidates = safe_mmr_candidates(
@@ -541,7 +544,8 @@ def retrieve_node(state: State, *, vector_store: Chroma | None = None) -> dict[s
         fetch_k=RETRIEVAL_MMR_FETCH_K,
     )
     documents = rerank_documents(query, dense_candidates, mmr_candidates)
-    return {"context": format_context(documents)}
+    kg_references = search_knowledge_graph(query, top_k=KG_TOP_K)
+    return {"context": format_context(documents), "kg_context": kg_references}
 
 
 def trim_node(state: State) -> dict[str, list[BaseMessage]]:
@@ -639,13 +643,16 @@ def generate_node(state: State, *, chat_model: Any = None) -> dict[str, list[Any
         return {"messages": [AIMessage(content=ASSISTANT_IDENTITY)]}
 
     context = state.get("context", [])
-    if not context:
+    kg_context = state.get("kg_context", [])
+    if not context and not kg_context:
         return {"messages": [AIMessage(content=FALLBACK_ANSWER)]}
 
     if not chat_model:
         raise ValueError("chat_model must be provided")
 
-    context_block = "\n\n".join(context) if context else "No relevant context retrieved."
+    rag_context_block = "\n\n".join(context) if context else "No RAG context retrieved."
+    kg_context_block = "\n\n".join(kg_context) if kg_context else "No knowledge-graph facts retrieved."
+    context_block = f"RAG Context:\n{rag_context_block}\n\nKnowledge Graph Facts:\n{kg_context_block}"
     response = chat_model.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT_TEMPLATE.format(context=context_block)),

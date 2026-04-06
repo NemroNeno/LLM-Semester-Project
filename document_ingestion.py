@@ -33,10 +33,12 @@ from db import (
     update_document_record,
     update_ingestion_job,
 )
+from knowledge_graph import delete_episodes, ingest_text_episode
 from rag import get_vector_store, message_to_text
 from settings import (
     INGESTION_DEFAULT_QA_COUNT,
     INGESTION_MAX_CHUNK_CHARS,
+    KG_DYNAMIC_GROUP_ID,
     OPENROUTER_BASE_URL,
     OPENROUTER_INGEST_MODEL,
     UPLOAD_DIRECTORY,
@@ -335,6 +337,24 @@ def process_document_ingestion(document_id: str, job_id: str) -> None:
             progress=20,
         )
 
+        update_ingestion_job(job_id, stage="ingesting_kg", progress=35, message="Adding document facts to knowledge graph")
+        kg_episode_ids: list[str] = []
+        kg_chunks = split_text_for_qa(extracted_text, max_chars=3000)
+        if not kg_chunks:
+            kg_chunks = [extracted_text]
+
+        for chunk_index, kg_chunk in enumerate(kg_chunks, start=1):
+            episode_id = ingest_text_episode(
+                name=f"uploaded:{document_id}:{chunk_index}",
+                body=kg_chunk,
+                source_description=document_record["original_filename"],
+                group_id=KG_DYNAMIC_GROUP_ID,
+            )
+            if episode_id:
+                kg_episode_ids.append(episode_id)
+
+        update_document_record(document_id, kg_episode_ids=json.dumps(kg_episode_ids))
+
         chat_model = get_ingest_chat_model()
         chunks = split_text_for_qa(extracted_text)
         if not chunks:
@@ -384,6 +404,7 @@ def process_document_ingestion(document_id: str, job_id: str) -> None:
             progress=100,
             qa_count=len(qa_pairs),
             vector_ids=json.dumps(vector_ids),
+            kg_episode_ids=json.dumps(kg_episode_ids),
         )
         update_ingestion_job(
             job_id,
@@ -450,12 +471,24 @@ def delete_document(document_id: str) -> None:
     if not vector_ids:
         vector_ids = [row["vector_id"] for row in list_document_qa_pairs(document_id)]
 
+    kg_episode_ids: list[str] = []
+    raw_kg_episode_ids = document_record.get("kg_episode_ids")
+    if raw_kg_episode_ids:
+        try:
+            parsed_kg = json.loads(raw_kg_episode_ids)
+            if isinstance(parsed_kg, list):
+                kg_episode_ids = [str(item) for item in parsed_kg]
+        except json.JSONDecodeError:
+            kg_episode_ids = []
+
     vector_store = get_vector_store()
     if vector_ids:
         try:
             vector_store.delete(ids=vector_ids)
         except Exception:
             pass
+
+    delete_episodes(kg_episode_ids)
 
     delete_document_qa_pairs(document_id)
 

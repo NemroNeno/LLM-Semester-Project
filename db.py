@@ -23,11 +23,13 @@ def init_db() -> None:
         "CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT, content TEXT, context_count INTEGER, rag_references TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT, content TEXT, context_count INTEGER, rag_references TEXT, kg_references TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "rag_references" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN rag_references TEXT")
+    if "kg_references" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN kg_references TEXT")
 
     conn.execute(
         """
@@ -63,6 +65,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN qa_count INTEGER NOT NULL DEFAULT 0")
     if "vector_ids" not in document_columns:
         conn.execute("ALTER TABLE documents ADD COLUMN vector_ids TEXT")
+    if "kg_episode_ids" not in document_columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN kg_episode_ids TEXT")
     if "latest_job_id" not in document_columns:
         conn.execute("ALTER TABLE documents ADD COLUMN latest_job_id TEXT")
     if "error_message" not in document_columns:
@@ -145,10 +149,22 @@ def parse_rag_references(raw: Any) -> list[str]:
     return []
 
 
+def parse_kg_references(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    except json.JSONDecodeError:
+        return []
+    return []
+
+
 def list_chat_messages(chat_id: str) -> list[dict[str, Any]]:
     conn = get_db()
     messages = conn.execute(
-        "SELECT role, content, context_count, rag_references FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
+        "SELECT role, content, context_count, rag_references, kg_references FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
         (chat_id,),
     ).fetchall()
     conn.close()
@@ -159,6 +175,7 @@ def list_chat_messages(chat_id: str) -> list[dict[str, Any]]:
             "content": message["content"],
             "context_count": message["context_count"],
             "rag_references": parse_rag_references(message["rag_references"]),
+            "kg_references": parse_kg_references(message["kg_references"]),
         }
         for message in messages
     ]

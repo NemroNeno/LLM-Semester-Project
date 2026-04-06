@@ -70,6 +70,8 @@
             display: flex;
             flex-direction: column;
             gap: 16px;
+            min-height: 0;
+            overflow: hidden;
         }
         
         .sidebar button.new-chat {
@@ -213,7 +215,7 @@
         .eyebrow { font-size: 12px; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.1em; }
         h1 { margin: 0; font-size: 1.5rem; }
 
-        .panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; }
+        .panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; min-height: 0; }
 
         .hidden { display: none !important; }
 
@@ -448,7 +450,7 @@
         <aside class="sidebar">
             <div class="eyebrow">NUST Bank</div>
             <h1>Smart Banking Assistant</h1>
-            <div id="user-sidebar-view" style="display: flex; flex-direction: column; height: 100%; min-height: 0;">
+            <div id="user-sidebar-view" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
                 <button class="new-chat" id="new-chat-btn">+ New Chat</button>
                 <div class="chat-list" id="chat-list">
                     <!-- Chat list dynamically populated -->
@@ -472,7 +474,7 @@
         </aside>
 
         <section class="panel">
-            <div id="user-main-view" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+            <div id="user-main-view" style="display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;">
                 <div id="messages" class="messages">
                     <div class="message assistant">Hello! I am the NUST Bank assistant. How can I help you today?</div>
                 </div>
@@ -561,7 +563,7 @@
             }
         }
 
-        function addMessage(role, text, contextCount = 0, ragReferences = []) {
+        function addMessage(role, text, contextCount = 0, ragReferences = [], kgReferences = []) {
             const element = document.createElement("div");
             element.className = `message ${role}`;
             
@@ -588,6 +590,29 @@
                     const sourceItem = document.createElement("pre");
                     sourceItem.className = "source-item";
                     sourceItem.textContent = `Source ${index + 1}\n${reference}`;
+                    sourcesList.appendChild(sourceItem);
+                });
+
+                details.appendChild(summary);
+                details.appendChild(sourcesList);
+                element.appendChild(details);
+            }
+
+            if (role === "assistant" && kgReferences.length > 0) {
+                const details = document.createElement("details");
+                details.className = "sources-dropdown";
+
+                const summary = document.createElement("summary");
+                summary.className = "sources-summary";
+                summary.textContent = `${kgReferences.length} KG fact source(s) used`;
+
+                const sourcesList = document.createElement("div");
+                sourcesList.className = "sources-list";
+
+                kgReferences.forEach((reference, index) => {
+                    const sourceItem = document.createElement("pre");
+                    sourceItem.className = "source-item";
+                    sourceItem.textContent = `Fact ${index + 1}\n${reference}`;
                     sourcesList.appendChild(sourceItem);
                 });
 
@@ -832,7 +857,7 @@
             try {
                 const res = await fetch(`/chats/${chatId}/messages`);
                 const history = await res.json();
-                history.forEach(m => addMessage(m.role, m.content, m.context_count, m.rag_references || []));
+                history.forEach(m => addMessage(m.role, m.content, m.context_count, m.rag_references || [], m.kg_references || []));
                 await loadChats(); // Update active class
             } catch (e) {
                 messages.innerHTML = '<div class="message assistant">Failed to load history.</div>';
@@ -884,7 +909,7 @@
                 }
 
                 currentChatId = payload.chat_id;
-                addMessage("assistant", payload.reply, payload.context_count, payload.rag_references || []);
+                addMessage("assistant", payload.reply, payload.context_count, payload.rag_references || [], payload.kg_references || []);
                 await loadChats();
             } catch (error) {
                 addMessage("assistant", `Error: ${error.message}`);
