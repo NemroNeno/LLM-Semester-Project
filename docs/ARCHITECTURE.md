@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-The project is a modular FastAPI application implementing a local-first RAG chatbot for NUST banking data, with optional remote generation and admin-driven dynamic ingestion.
+The project is a modular FastAPI application implementing a hybrid RAG + knowledge-graph chatbot for NUST banking data, with optional remote generation and admin-driven dynamic ingestion.
 
 Primary flow:
 
@@ -10,7 +10,8 @@ Primary flow:
 2. API stores user message in SQLite.
 3. LangGraph pipeline executes retrieve -> summarize -> trim -> generate.
 4. Assistant response and RAG references are persisted.
-5. UI renders markdown answer and source snippets.
+5. Assistant response, RAG references, and KG references are persisted.
+6. UI renders markdown answer with both RAG and KG source snippets.
 
 Admin ingestion flow:
 
@@ -18,7 +19,8 @@ Admin ingestion flow:
 2. Backend stores file and creates document/job records.
 3. Background thread extracts text and generates QA pairs.
 4. QA pairs are embedded and indexed in Chroma.
-5. Job/document progress is polled from UI until completion.
+5. Document text chunks are also inserted into KG as episodic entries.
+6. Job/document progress is polled from UI until completion.
 
 ## 2. Module Architecture
 
@@ -27,7 +29,7 @@ Admin ingestion flow:
 Responsibility:
 
 - Centralized environment-driven runtime configuration
-- Defaults for providers, models, retrieval, summarization, and ingestion behavior
+- Defaults for providers, models, retrieval, summarization, ingestion behavior, and KG integration
 
 Key design:
 
@@ -41,6 +43,7 @@ Responsibility:
 - Chat persistence and retrieval
 - Summarization pre-check token accounting
 - Document/job/QA persistence for ingestion subsystem
+- Persistence of KG references per chat message and KG episode IDs per document
 
 Schema components:
 
@@ -49,6 +52,11 @@ Schema components:
 - documents
 - ingestion_jobs
 - document_qa_pairs
+
+Notable KG-related fields:
+
+- messages.kg_references
+- documents.kg_episode_ids
 
 Migration behavior:
 
@@ -60,13 +68,14 @@ Responsibility:
 
 - Provider/model selection and normalization
 - Embedding and vector store access
+- Knowledge graph fact retrieval integration
 - Hybrid candidate retrieval and weighted reranking
 - LangGraph node definitions and graph compilation
 - Graph invocation entrypoint
 
 Node chain:
 
-- retrieve: gathers and reranks context
+- retrieve: gathers and reranks vector context and pulls KG facts
 - summarize: rolls older history into compact memory when threshold exceeded
 - trim: token-budget trims retained messages
 - generate: answers with system prompt and guardrails
@@ -86,6 +95,7 @@ Responsibility:
 - Chunking and OpenRouter QA synthesis
 - QA/vector document creation
 - Chroma indexing and SQLite metadata updates
+- KG episode ingestion for uploaded document chunks
 - Document deletion lifecycle
 
 Supported extractors:
@@ -107,21 +117,51 @@ Responsibility:
 - Chat lifecycle endpoints
 - Admin ingestion endpoints
 - Startup DB initialization hook
+- Chat payload support for both rag_references and kg_references
 
-### 2.6 app.py
+### 2.6 knowledge_graph.py
+
+Responsibility:
+
+- Graphiti client construction and lifecycle
+- Neo4j-backed KG ingestion and search
+- Sync-safe async execution bridge for FastAPI request path
+- Fallback keyword search against Neo4j when Graphiti semantic search fails
+
+Key design:
+
+- Dedicated background event loop thread for async Graphiti calls from sync code paths
+- Timeout-bounded calls for search/ingestion/deletion
+- Graceful degradation to fallback retrieval instead of failing chat
+
+### 2.7 ingest_markdown_kg.py
+
+Responsibility:
+
+- One-time static KG bootstrap from `sheets_markdown/*.md`
+- Chunking of markdown files before KG insertion
+- Progress tracking using `tqdm`
+
+### 2.8 clear_neo4j.py
+
+Responsibility:
+
+- Guarded local utility to wipe all Neo4j graph data for reset/re-ingestion workflows
+
+### 2.9 app.py
 
 Responsibility:
 
 - Compatibility facade and export surface to keep entrypoints/imports stable
 
-### 2.7 ingest.py
+### 2.10 ingest.py
 
 Responsibility:
 
 - One-shot ingestion of canonical sheets_qa corpus
 - Collection reset and repopulation workflow for Chroma
 
-### 2.8 evaluate_rag_retrieval.py
+### 2.11 evaluate_rag_retrieval.py
 
 Responsibility:
 
@@ -129,7 +169,7 @@ Responsibility:
 - Provider-aware evaluator LLM setup
 - JSON report generation
 
-### 2.9 templates/index.html
+### 2.12 templates/index.html
 
 Responsibility:
 
@@ -142,12 +182,14 @@ Responsibility:
 - Browser UI
 - FastAPI API layer
 - LangGraph execution engine
+- Graphiti knowledge graph service layer
 - LLM providers:
 - OpenRouter via ChatOpenAI
 - Ollama via ChatOllama
 - Embedding provider:
 - OllamaEmbeddings
 - Chroma persistent vector store
+- Neo4j graph database (knowledge graph persistence)
 - SQLite persistence layer
 - Local file storage for uploads and source corpus
 
@@ -193,6 +235,18 @@ QA pair rows track:
 - question/answer payload
 - vector ID linkage
 
+### 4.4 Knowledge Graph Data
+
+Graph persistence (Neo4j):
+
+- Episodic nodes from markdown and uploaded-document ingestion
+- RELATES_TO fact edges used for semantic/fallback retrieval
+
+Runtime metadata persistence (SQLite):
+
+- `messages.kg_references` stores per-turn KG sources shown in UI
+- `documents.kg_episode_ids` stores KG episode IDs for cleanup on delete
+
 ## 5. Retrieval and Reranking Strategy
 
 Candidate sources:
@@ -201,6 +255,7 @@ Candidate sources:
 - MMR from Chroma
 - Lexical overlap against corpus
 - Optional BM25 retriever
+- Neo4j/Graphiti KG fact search (top-K)
 
 Fusion approach:
 
@@ -213,6 +268,11 @@ Rationale:
 - Dense retrieval captures semantic similarity
 - Lexical/BM25 recover term-specific and numeric queries
 - RRF reduces dependence on a single retriever signal
+- KG facts provide relation-oriented evidence complementary to vector chunks
+
+Failure handling:
+
+- If Graphiti semantic search fails (for example provider quota limit), system falls back to Neo4j keyword fact matching.
 
 ## 6. Memory and Context Management
 
@@ -281,6 +341,7 @@ Chat APIs:
 - GET /chats/{chat_id}/messages
 - POST /chat/will-summarize
 - POST /chat
+Includes both `rag_references` and `kg_references` in response payload.
 
 Admin APIs:
 
@@ -304,6 +365,7 @@ Primary UX features:
 - Top-right panel switch
 - Sidebar chat history and provider selector
 - RAG sources dropdown per assistant turn
+- KG sources dropdown per assistant turn
 - Admin progress bars and extracted-text preview
 
 ## 11. Technology Stack
@@ -323,6 +385,7 @@ RAG and orchestration:
 - langchain-ollama
 - langchain-chroma
 - chromadb
+- graphiti-core
 - rank-bm25
 
 Data and document handling:
@@ -333,6 +396,7 @@ Data and document handling:
 - openpyxl
 - xlrd
 - python-multipart
+- neo4j (driver used by utility/fallback path)
 
 Evaluation:
 
@@ -397,7 +461,8 @@ Interpretation:
 1. Ensure dependencies installed with uv sync.
 2. Ensure Ollama service and embedding model availability.
 3. Run ingestion for baseline corpus (ingest.py) if needed.
-4. Start API server via uvicorn or main.py.
+4. Optionally bootstrap static KG with ingest_markdown_kg.py.
+5. Start API server via uvicorn or main.py.
 
 ### 13.2 Failure Modes
 
@@ -406,6 +471,8 @@ Interpretation:
 - Empty or unparsable uploaded files
 - LLM QA generation returning invalid JSON
 - Chroma deletion/indexing transient errors
+- Graphiti semantic search failures due to provider quota or external API limits
+- Neo4j connectivity/auth failures (KG falls back or returns empty KG context)
 
 ### 13.3 Scalability Constraints
 
