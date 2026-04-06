@@ -99,6 +99,24 @@ After starting Uvicorn, open `http://127.0.0.1:8000/` in the browser.
 5. Run `uv run uvicorn app:app --reload`.
 6. Open `http://127.0.0.1:8000/` and send a banking question.
 
+## Admin Document Ingestion
+
+The main UI now includes a lightweight admin panel for dynamic ingestion.
+
+- Upload supported files: `.txt`, `.pdf`, `.csv`, `.xlsx`, `.xls`, `.xlsm`
+- Uploaded files are saved locally in a configurable folder and tracked in SQLite
+- The app extracts text, generates Q/A pairs with OpenRouter Gemini 2.5 Flash, stores the generated pairs, and indexes them into Chroma
+- Ingestion runs in the background and the UI polls progress until completion
+- Deleting a document removes the source file, derived Q/A rows, and vector-store entries
+
+Relevant environment variables:
+
+- `DOCUMENT_UPLOAD_DIRECTORY` default: `uploaded_documents`
+- `OPENROUTER_INGEST_MODEL` default: `google/gemini-2.5-flash`
+- `INGESTION_DEFAULT_QA_COUNT` default: `5`
+- `INGESTION_MAX_CHUNK_CHARS` default: `6000`
+- `INGESTION_JOB_POLL_SECONDS` default: `1.0`
+
 ## Troubleshooting
 
 - If `/chat` returns a `503`, set `OPENROUTER_API_KEY` or switch to `CHAT_PROVIDER=ollama` after the local chat model is available.

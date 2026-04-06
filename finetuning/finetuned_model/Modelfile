@@ -3,7 +3,7 @@ FROM qwen2.5:3b-instruct
 
 # 2. Point to the current directory for the adapter weights
 # Ollama will automatically find the .safetensors and .json files
-ADAPTER .
+ADAPTER ./adapter.gguf
 
 # 3. Use the template from your chat_template.jinja (translated to Go)
 TEMPLATE """{{ if .System }}<|im_start|>system

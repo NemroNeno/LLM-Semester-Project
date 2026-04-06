@@ -4,12 +4,13 @@ import json
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Path, Request
+from fastapi import FastAPI, File, HTTPException, Path, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from db import get_db, init_db, list_chat_messages, list_chats, should_summarize_next_turn
+from document_ingestion import delete_document, get_document_status, ingest_uploaded_document, list_documents
 from rag import CHAT_PROVIDER, OLLAMA_CHAT_MODEL, OPENROUTER_MODEL, invoke_graph, message_to_text
 from settings import TEMPLATES_DIRECTORY, THREAD_ID
 
@@ -37,6 +38,20 @@ class ChatResponse(BaseModel):
     rag_references: list[str] = Field(default_factory=list)
     provider: str
     chat_id: str
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    job_id: str
+
+
+class DocumentDeleteResponse(BaseModel):
+    deleted: bool
+
+
+class DocumentStatusResponse(BaseModel):
+    document: dict[str, Any]
+    job: dict[str, Any] | None = None
 
 
 app = FastAPI(title="LLM Semester Project")
@@ -124,3 +139,26 @@ def chat(payload: ChatRequest) -> ChatResponse:
         provider=payload.provider,
         chat_id=chat_id,
     )
+
+
+@app.get("/admin/documents")
+def admin_list_documents() -> list[dict[str, Any]]:
+    return list_documents()
+
+
+@app.get("/admin/documents/{document_id}", response_model=DocumentStatusResponse)
+def admin_get_document(document_id: str) -> DocumentStatusResponse:
+    status = get_document_status(document_id)
+    return DocumentStatusResponse(document=status["document"], job=status["job"])
+
+
+@app.post("/admin/documents", response_model=DocumentUploadResponse)
+def admin_upload_document(file: UploadFile = File(...)) -> DocumentUploadResponse:
+    result = ingest_uploaded_document(file)
+    return DocumentUploadResponse(document_id=result.document_id, job_id=result.job_id)
+
+
+@app.delete("/admin/documents/{document_id}", response_model=DocumentDeleteResponse)
+def admin_delete_document(document_id: str) -> DocumentDeleteResponse:
+    delete_document(document_id)
+    return DocumentDeleteResponse(deleted=True)
