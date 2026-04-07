@@ -1,0 +1,174 @@
+{
+  "evaluation_summary": {
+    "n_questions": 25,
+    "chat_model": "qwen2.5:3b-instruct-bitext-cs-dataet-tuned",
+    "judge_model": "gpt-4o-mini",
+    "embed_model": "text-embedding-3-small",
+    "provider": "ollama-finetuned",
+    "seed": 42,
+    "answer_relevancy_n": 5
+  },
+  "data_source": {
+    "directory": "C:\\Users\\Nemro Neno\\Desktop\\semesters\\Semester 8\\LLM\\Project\\sheets_qa",
+    "description": "NUST banking product Q&A corpus (sheets_qa/qa_*.json)",
+    "files_sampled": {
+      "qa_CDA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the free services offered with Current Deposit Account?"
+        ]
+      },
+      "qa_ESFCA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What is the Target Market?"
+        ]
+      },
+      "qa_LCA.json": {
+        "n_questions": 1,
+        "questions": [
+          "How can the minor operate this account?"
+        ]
+      },
+      "qa_NAA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the basic Features of NUST Asaan Account?"
+        ]
+      },
+      "qa_NADRA.json": {
+        "n_questions": 1,
+        "questions": [
+          "Are there any transaction limits in NUST Asaan Digital Remittance Account ?"
+        ]
+      },
+      "qa_NFBF.json": {
+        "n_questions": 1,
+        "questions": [
+          "What is the current Mark-up rate of Ask Fauri Business Finance?"
+        ]
+      },
+      "qa_NFDA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What is the Account type of NUST Freelancer Digital Account ? is it Current or Saving?"
+        ]
+      },
+      "qa_NFMF.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the processing charges for NUST Flour Mill Finance Application?"
+        ]
+      },
+      "qa_NHF.json": {
+        "n_questions": 1,
+        "questions": [
+          "Is there any minimum age to avail financing in NUST Hunarmand Finance?"
+        ]
+      },
+      "qa_NIF.json": {
+        "n_questions": 1,
+        "questions": [
+          "For which purpose NUST Imarat Finance is being offered?"
+        ]
+      },
+      "qa_NMA.json": {
+        "n_questions": 1,
+        "questions": [
+          "Is\u00a0there any account which provides lucrative profits on my long term savings?"
+        ]
+      },
+      "qa_NMC.json": {
+        "n_questions": 1,
+        "questions": [
+          "7. What is the minimum monthly income criterion?"
+        ]
+      },
+      "qa_NMF.json": {
+        "n_questions": 1,
+        "questions": [
+          "1.What types of Housing Finance products does NUST offer?"
+        ]
+      },
+      "qa_NSA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the free facilities NUST is offering on NUST Sahar Current Account ?"
+        ]
+      },
+      "qa_NSDA.json": {
+        "n_questions": 1,
+        "questions": [
+          "Please tell me about profit payment and calculation?"
+        ]
+      },
+      "qa_NSF.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the Loan Limits of NUST Sahar Finance?"
+        ]
+      },
+      "qa_NWA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What is the minimum deposit requirement to open NUST Waqaar Savings Account & NUST Waqaar Term Deposit?"
+        ]
+      },
+      "qa_Nust Life.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the main features of these NUST Life Insurance Plans"
+        ]
+      },
+      "qa_PF.json": {
+        "n_questions": 1,
+        "questions": [
+          "How will I get update of my Personal Loan Application?"
+        ]
+      },
+      "qa_PLS.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the main features of NUST Profit & Loss Sharing (PLS) Account?"
+        ]
+      },
+      "qa_PMYB &ALS.json": {
+        "n_questions": 1,
+        "questions": [
+          "Is there any minimum age to avail financing in PMYB & ALS and any mandatory qualification/experience required?"
+        ]
+      },
+      "qa_PWRA.json": {
+        "n_questions": 1,
+        "questions": [
+          "What are the free services associated with PakWatan Remittance account?"
+        ]
+      },
+      "qa_Rate Sheet July 1 2024.json": {
+        "n_questions": 1,
+        "questions": [
+          "Profit Payment"
+        ]
+      },
+      "qa_VP-BA.json": {
+        "n_questions": 1,
+        "questions": [
+          "Please tell me about Free Facilities being provided on Value Plus Current Account for Business upon maintaining minimum Monthly average Balance ?"
+        ]
+      },
+      "qa_VPBA.json": {
+        "n_questions": 1,
+        "questions": [
+          "Please tell me about the Minimum Monthly balance required for this account?"
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "context_precision": 0.9133333332592777,
+    "context_recall": 0.9520000000000001,
+    "faithfulness": 0.9471111111111111,
+    "factual_correctness": 0.8351999999999999,
+    "answer_relevancy": 0.5162468014091288
+  }
+}
